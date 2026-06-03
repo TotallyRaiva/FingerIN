@@ -1,0 +1,32 @@
+# Xcode
+#
+# gitignore contributors: add or remove patterns below to suit your needs.
+#
+# % git checkout -b your-branch
+# % git add .gitignore
+# % git commit -m "Add .gitignore"
+
+## Build results
+build/
+DerivedData/
+
+## OS X
+.DS_Store
+
+## User-specific folders
+*.xcuserstate
+*.xcuserdatad
+xcuserdata/
+
+## Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+## Other
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+!default.mode1v3
+!default.mode2v3
+!default.perspectivev3
