@@ -84,6 +84,10 @@ class MIDIManager: ObservableObject {
                 // Note ON is 0x90 to 0x9F (depending on channel)
                 if (status & 0xF0) == 0x90 && velocity > 0 {
                     print("Sniffer: Note ON - Note Number: [\(note)], Velocity: [\(velocity)]")
+                    
+                    // Trigger sound instantly for zero-latency feedback
+                    AudioManager.shared.triggerSound(for: UInt8(note))
+                    
                     DispatchQueue.main.async {
                         self.lastNote = note
                         self.lastVelocity = velocity
