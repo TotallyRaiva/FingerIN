@@ -69,12 +69,15 @@ class MIDIManager: ObservableObject {
     }
     
     private func handleMIDIInput(packetList: UnsafePointer<MIDIPacketList>) {
+        print("MIDIManager: Received MIDI Packet List")
         var packet = packetList.pointee.packet
         let packetCount = Int(packetList.pointee.numPackets)
         
-        for _ in 0..<packetCount {
+        for i in 0..<packetCount {
             let data = withUnsafeBytes(of: packet.data) { Array($0) }
             let length = Int(packet.length)
+            
+            print("MIDIManager: Packet [\(i)] - Length: \(length), Data: \(data.prefix(length))")
             
             if length >= 3 {
                 let status = data[0]
