@@ -13,73 +13,74 @@ struct ContentView: View {
     
     // Use a computed property or a persistent object to ensure the scene isn't lost
     // Better yet, use a dedicated ViewModel or simple container
+    // Scene instance
     @State private var scene: GameScene = {
         let scene = GameScene()
-        scene.size = CGSize(width: 400, height: 600)
-        scene.scaleMode = .fill
+        // Force size to match the 4-lane height (80 * 4)
+        scene.size = CGSize(width: 800, height: 320)
+        scene.scaleMode = .aspectFill // Ensure it fills the container without distortion
         return scene
     }()
-    
     var body: some View {
-        HStack(spacing: 0) {
-            // Left Side: Game Timeline
-            SpriteView(scene: scene)
-                .frame(width: 400, height: 600)
-                .onReceive(midiManager.$lastNote) { note in
-                    if let noteValue = note {
-                        print("ContentView: Received Note \(noteValue), flashing lane...")
-                        scene.flashLane(for: UInt8(noteValue))
-                    }
+        VStack(spacing: 0) {
+            // Top: Control Bar (Future Overview)
+            HStack {
+                Text("FingerIN").font(.headline).foregroundColor(.white)
+                Spacer()
+                if let note = midiManager.lastNote {
+                    Text("MIDI NOTE: \(note)").font(.caption).monospaced().foregroundColor(.cyan)
                 }
+            }
+            .padding(.horizontal)
+            .frame(height: 40)
+            .background(Color.black)
             
-            // Right Side: Controls & Info
-            VStack(spacing: 20) {
-                Text("FingerIN")
-                    .font(.largeTitle)
-                    .bold()
+            // Middle: Game Area
+            HStack(alignment: .bottom, spacing: 0) {
+                // Left: Spatial Mapping Panel
+                LeftContextPanel()
                 
+                // Right: Scrolling Timeline
+                SpriteView(scene: scene)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 320) // Exactly 4 lanes * 80px
+                    .onReceive(midiManager.$lastNote) { note in
+                        if let noteValue = note {
+                            scene.flashLane(for: UInt8(noteValue))
+                        }
+                    }
+            }
+            .frame(height: 320)
+            .background(Color.black)
+            
+            // Bottom: Device Info & Test Controls
+            HStack(spacing: 20) {
                 VStack(alignment: .leading) {
-                    Text("MIDI Devices:")
-                        .font(.headline)
+                    Text("MIDI Devices:").font(.caption).bold()
                     ForEach(midiManager.connectedDevices, id: \.self) { device in
-                        Text("• \(device)").font(.caption)
+                        Text("• \(device)").font(.system(size: 9))
                     }
                 }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(10)
-                
-                Divider()
-                
-                // Test Controls
-                VStack {
-                    Text("Spawn Test Notes")
-                        .font(.headline)
-                    HStack {
-                        Button("Kick (12)") { scene.spawnNote(for: 12) }
-                        Button("Snare (13)") { scene.spawnNote(for: 13) }
-                    }
-                    HStack {
-                        Button("HH C (14)") { scene.spawnNote(for: 14) }
-                        Button("HH O (15)") { scene.spawnNote(for: 15) }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
+                .padding(8)
+                .background(Color.white.opacity(0.05))
+                .cornerRadius(6)
                 
                 Spacer()
                 
-                if let note = midiManager.lastNote {
-                    VStack {
-                        Text("Last Pad Hit: \(note)")
-                            .font(.headline)
-                            .foregroundColor(.cyan)
-                    }
+                HStack {
+                    Button("KICK") { scene.spawnNote(for: 12) }
+                    Button("SNARE") { scene.spawnNote(for: 13, travelTime: 3.0) }
+                    Button("HH C") { scene.spawnNote(for: 14, travelTime: 1.5) }
+                    Button("HH O") { scene.spawnNote(for: 15, travelTime: 4.0) }
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             .padding()
-            .frame(width: 300)
+            .frame(maxWidth: .infinity)
+            .background(Color(white: 0.05))
         }
-        .frame(minWidth: 700, minHeight: 600)
+        .frame(minWidth: 900, minHeight: 500)
     }
 }
 

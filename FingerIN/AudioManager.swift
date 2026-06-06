@@ -37,7 +37,7 @@ class AudioManager: ObservableObject {
         engine.connect(mixer, to: engine.outputNode, format: engine.mainMixerNode.outputFormat(forBus: 0))
         
         // Initialize player node pool
-        for i in 0..<poolSize {
+        for _ in 0..<poolSize {
             let playerNode = AVAudioPlayerNode()
             engine.attach(playerNode)
             // Connect with a generic format or mixer's input format
