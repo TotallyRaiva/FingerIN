@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var currentBPM: Double = 120
     @State private var isLooping: Bool = true
     @State private var isMetronomeEnabled: Bool = false
+    @State private var isDemoMode: Bool = false
     @State private var isPlaying: Bool = true
     @State private var activePads: Set<UInt8> = [12, 13, 14, 15]
     @State private var selectedTemplate: LevelProvider.PatternTemplate = LevelProvider.rock
@@ -38,6 +39,7 @@ struct ContentView: View {
         .onChange(of: currentBPM) { _, _ in reloadLevel() }
         .onChange(of: isLooping) { _, _ in reloadLevel() }
         .onChange(of: isMetronomeEnabled) { _, _ in reloadLevel() }
+        .onChange(of: isDemoMode) { _, _ in reloadLevel() }
         .onChange(of: activePads) { _, _ in reloadLevel() }
         .onChange(of: selectedTemplate) { _, newValue in 
             currentBPM = newValue.bpm
@@ -56,6 +58,7 @@ struct ContentView: View {
                     Text(accuracy.rawValue)
                         .font(.system(size: 10, weight: .black))
                         .foregroundColor(accuracy.color)
+                        .transition(.opacity)
                 }
             }
             .frame(width: 100, alignment: .leading)
@@ -76,6 +79,7 @@ struct ContentView: View {
             
             Toggle("LOOP", isOn: $isLooping).toggleStyle(.button)
             Toggle("METRO", isOn: $isMetronomeEnabled).toggleStyle(.button)
+            Toggle("DEMO", isOn: $isDemoMode).toggleStyle(.button)
             
             Spacer()
             
@@ -210,7 +214,8 @@ struct ContentView: View {
             notes: result.notes,
             barDuration: result.barDuration,
             loop: isLooping,
-            metronome: isMetronomeEnabled
+            metronome: isMetronomeEnabled,
+            isDemoMode: isDemoMode
         )
     }
 }

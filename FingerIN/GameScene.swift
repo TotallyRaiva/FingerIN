@@ -15,6 +15,7 @@ class GameScene: SKScene {
     private var levelStartTime: TimeInterval = 0
     private let perfectWindow: TimeInterval = 0.05
     private let goodWindow: TimeInterval = 0.15
+    private var isDemoMode: Bool = false
     
     // UI Elements
     private var hitLine: SKShapeNode!
@@ -104,6 +105,14 @@ class GameScene: SKScene {
     
     // Handle a physical pad hit
     func handleHit(for noteNumber: UInt8) {
+        // If in Demo Mode, just flash the lane and play sound (jamming), skip scoring
+        if isDemoMode {
+            flashLane(for: noteNumber)
+            return
+        }
+
+        let currentTime = CACurrentMediaTime() - levelStartTime
+        
         // Find notes in this lane that are close to the hit line
         let activeNotes = children.compactMap { $0 as? SKShapeNode }
             .filter { $0.name == "note" && ($0.userData?["lane"] as? UInt8) == noteNumber }
@@ -132,8 +141,6 @@ class GameScene: SKScene {
             closestNote.removeFromParent() // Note was hit
             ScoreManager.shared.registerHit(accuracy: accuracy)
         } else {
-            // Hit was too early or too late, but we don't count it as a miss yet
-            // to allow the note to reach the hit line or be hit later.
             print("GameScene: Hit detected but outside windows (diff: \(timeDiff)s)")
         }
         
@@ -141,6 +148,7 @@ class GameScene: SKScene {
     }
     
     private func registerMiss() {
+        if isDemoMode { return } // Don't register misses in Demo Mode
         ScoreManager.shared.registerHit(accuracy: .miss)
         // Show "MISS" feedback at the hit line
         showFeedback(accuracy: .miss, at: CGPoint(x: hitLineX, y: size.height / 2))
@@ -198,28 +206,53 @@ class GameScene: SKScene {
         barDuration: TimeInterval,
         loop: Bool = true,
         metronome: Bool = false,
+        isDemoMode: Bool = false,
         noteTravelTime: TimeInterval = 2.0
     ) {
         stopAndClear()
+        self.isDemoMode = isDemoMode
         levelStartTime = CACurrentMediaTime()
         
-        print("GameScene: Loading level with \(notes.count) notes, Loop: \(loop), Metro: \(metronome)")
+        print("GameScene: Loading level with \(notes.count) notes, Loop: \(loop), Metro: \(metronome), Demo: \(isDemoMode)")
         
         // 1. Schedule Notes
         for (index, note) in notes.enumerated() {
             let spawnDelay = note.timeSeconds
             
-            let waitBefore = SKAction.wait(forDuration: spawnDelay)
             let spawn = SKAction.run { [weak self] in
                 self?.spawnNote(for: note.padIndex, targetHitTime: note.timeSeconds, travelTime: noteTravelTime)
             }
             
+            // Audio Trigger for Demo Mode (synced to hit time)
+            let playSound = SKAction.run { [weak self] in
+                if self?.isDemoMode == true {
+                    AudioManager.shared.triggerSound(for: note.padIndex)
+                }
+            }
+            
             if loop {
-                let waitAfter = SKAction.wait(forDuration: barDuration - spawnDelay)
-                let sequence = SKAction.sequence([waitBefore, spawn, waitAfter])
-                self.run(SKAction.repeatForever(sequence), withKey: "note_loop_\(index)")
+                // Visual Spawn Loop: Initial offset then consistent repeat
+                let initialVisualWait = SKAction.wait(forDuration: spawnDelay)
+                let visualRepeat = SKAction.repeatForever(SKAction.sequence([
+                    spawn,
+                    SKAction.wait(forDuration: barDuration)
+                ]))
+                self.run(SKAction.sequence([initialVisualWait, visualRepeat]), withKey: "note_loop_visual_\(index)")
+                
+                if isDemoMode {
+                    let audioDelay = spawnDelay + noteTravelTime
+                    let initialAudioWait = SKAction.wait(forDuration: audioDelay)
+                    let audioRepeat = SKAction.repeatForever(SKAction.sequence([
+                        playSound,
+                        SKAction.wait(forDuration: barDuration)
+                    ]))
+                    self.run(SKAction.sequence([initialAudioWait, audioRepeat]), withKey: "note_loop_audio_\(index)")
+                }
             } else {
-                self.run(SKAction.sequence([waitBefore, spawn]))
+                self.run(SKAction.sequence([SKAction.wait(forDuration: spawnDelay), spawn]))
+                if isDemoMode {
+                    self.run(SKAction.sequence([SKAction.wait(forDuration: spawnDelay + noteTravelTime), playSound]))
+                }
             }
         }
         
