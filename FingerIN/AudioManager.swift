@@ -113,4 +113,9 @@ class AudioManager: ObservableObject {
         playerNode.play()
         print("AudioManager: [PLAY] Scheduled buffer for note \(noteNumber)")
     }
+    
+    func playMetronomeClick() {
+        // Reuse HH Closed (14) for metronome click for now
+        triggerSound(for: 14)
+    }
 }

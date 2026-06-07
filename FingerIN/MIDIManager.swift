@@ -69,39 +69,32 @@ class MIDIManager: ObservableObject {
     }
     
     private func handleMIDIInput(packetList: UnsafePointer<MIDIPacketList>) {
-        print("MIDIManager: Received MIDI Packet List")
-        var packet = packetList.pointee.packet
-        let packetCount = Int(packetList.pointee.numPackets)
+        var packetPtr = UnsafeMutablePointer(mutating: packetList).pointee.packet
+        let numPackets = packetList.pointee.numPackets
         
-        for i in 0..<packetCount {
-            let data = withUnsafeBytes(of: packet.data) { Array($0) }
-            let length = Int(packet.length)
-            
-            print("MIDIManager: Packet [\(i)] - Length: \(length), Data: \(data.prefix(length))")
+        for _ in 0..<numPackets {
+            let data = withUnsafeBytes(of: packetPtr.data) { Array($0) }
+            let length = Int(packetPtr.length)
             
             if length >= 3 {
                 let status = data[0]
                 let note = Int(data[1])
                 let velocity = Int(data[2])
                 
-                // Note ON is 0x90 to 0x9F (depending on channel)
                 if (status & 0xF0) == 0x90 && velocity > 0 {
-                    print("Sniffer: Note ON - Note Number: [\(note)], Velocity: [\(velocity)]")
-                    
-                    // Trigger sound instantly for zero-latency feedback
+                    print("MIDIManager: Note ON [\(note)] Velocity [\(velocity)]")
                     AudioManager.shared.triggerSound(for: UInt8(note))
                     
                     DispatchQueue.main.async {
                         self.lastNote = note
                         self.lastVelocity = velocity
                     }
-                } else if (status & 0xF0) == 0x80 || ((status & 0xF0) == 0x90 && velocity == 0) {
-                    // Note OFF
-                    // print("Sniffer: Note OFF - Note Number: [\(note)]")
                 }
             }
             
-            packet = MIDIPacketNext(&packet).pointee
+            // Safe pointer advancement
+            let nextPacket = MIDIPacketNext(&packetPtr)
+            packetPtr = nextPacket.pointee
         }
     }
 }

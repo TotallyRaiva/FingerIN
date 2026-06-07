@@ -114,26 +114,57 @@ class GameScene: SKScene {
         pulse.run(SKAction.sequence([fade, remove]))
     }
     
-    // Load a sequence of notes (a Level) into the timeline
-    func loadLevel(notes: [TrackNote], noteTravelTime: TimeInterval = 2.0) {
-        // Clear existing notes if necessary
-        self.enumerateChildNodes(withName: "note") { node, _ in
-            node.removeFromParent()
-        }
+    // Load a sequence of notes (a Level) into the timeline with looping and metronome
+    func loadLevel(
+        notes: [TrackNote],
+        barDuration: TimeInterval,
+        loop: Bool = true,
+        metronome: Bool = false,
+        noteTravelTime: TimeInterval = 2.0
+    ) {
+        stopAndClear()
         
-        print("GameScene: Loading level with \(notes.count) notes...")
+        print("GameScene: Loading level with \(notes.count) notes, Loop: \(loop), Metro: \(metronome)")
         
-        for note in notes {
-            // Calculate delay: A note scheduled for time T must be spawned at (T)
-            // It will then take noteTravelTime to reach the Hit Line.
+        // 1. Schedule Notes
+        for (index, note) in notes.enumerated() {
             let spawnDelay = note.timeSeconds
             
-            let wait = SKAction.wait(forDuration: spawnDelay)
+            let waitBefore = SKAction.wait(forDuration: spawnDelay)
             let spawn = SKAction.run { [weak self] in
                 self?.spawnNote(for: note.padIndex, travelTime: noteTravelTime)
             }
+            let waitAfter = SKAction.wait(forDuration: barDuration - spawnDelay)
             
-            self.run(SKAction.sequence([wait, spawn]))
+            let sequence = SKAction.sequence([waitBefore, spawn, waitAfter])
+            let action = loop ? SKAction.repeatForever(sequence) : sequence
+            // Use a unique key per note to prevent overwriting
+            self.run(action, withKey: "note_loop_\(index)")
         }
+        
+        // 2. Schedule Metronome (4 clicks per bar)
+        if metronome {
+            let clickInterval = barDuration / 4.0
+            let click = SKAction.run {
+                AudioManager.shared.playMetronomeClick()
+            }
+            let wait = SKAction.wait(forDuration: clickInterval)
+            let sequence = SKAction.sequence([click, wait])
+            let action = loop ? SKAction.repeatForever(sequence) : SKAction.repeat(sequence, count: 4)
+            self.run(action, withKey: "metronome_loop")
+        }
+    }
+    
+    func setPaused(_ paused: Bool) {
+        self.isPaused = paused
+        print("GameScene: \(paused ? "Paused" : "Resumed")")
+    }
+    
+    func stopAndClear() {
+        self.removeAllActions()
+        self.enumerateChildNodes(withName: "note") { node, _ in
+            node.removeFromParent()
+        }
+        print("GameScene: Actions and notes cleared.")
     }
 }
