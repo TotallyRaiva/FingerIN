@@ -67,6 +67,17 @@ struct ContentView: View {
                 
                 Spacer()
                 
+                // Level Controls
+                HStack(spacing: 12) {
+                    Button("ROCK") { scene.loadLevel(notes: LevelProvider.rockPattern) }
+                    Button("HOUSE") { scene.loadLevel(notes: LevelProvider.housePattern) }
+                    Button("BOOM BAP") { scene.loadLevel(notes: LevelProvider.boomBapPattern) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                
+                Spacer()
+                
                 HStack {
                     Button("KICK") { scene.spawnNote(for: 12) }
                     Button("SNARE") { scene.spawnNote(for: 13, travelTime: 3.0) }

@@ -113,4 +113,27 @@ class GameScene: SKScene {
         hitGlow.run(SKAction.sequence([fade, remove]))
         pulse.run(SKAction.sequence([fade, remove]))
     }
+    
+    // Load a sequence of notes (a Level) into the timeline
+    func loadLevel(notes: [TrackNote], noteTravelTime: TimeInterval = 2.0) {
+        // Clear existing notes if necessary
+        self.enumerateChildNodes(withName: "note") { node, _ in
+            node.removeFromParent()
+        }
+        
+        print("GameScene: Loading level with \(notes.count) notes...")
+        
+        for note in notes {
+            // Calculate delay: A note scheduled for time T must be spawned at (T)
+            // It will then take noteTravelTime to reach the Hit Line.
+            let spawnDelay = note.timeSeconds
+            
+            let wait = SKAction.wait(forDuration: spawnDelay)
+            let spawn = SKAction.run { [weak self] in
+                self?.spawnNote(for: note.padIndex, travelTime: noteTravelTime)
+            }
+            
+            self.run(SKAction.sequence([wait, spawn]))
+        }
+    }
 }
