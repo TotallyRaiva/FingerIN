@@ -11,6 +11,11 @@ class GameScene: SKScene {
     // Note mapping (matching MIDI notes 12-15)
     private let midiNotes: [UInt8] = [12, 13, 14, 15]
     
+    // Scoring State
+    private var levelStartTime: TimeInterval = 0
+    private let perfectWindow: TimeInterval = 0.05
+    private let goodWindow: TimeInterval = 0.15
+    
     // UI Elements
     private var hitLine: SKShapeNode!
     private var lanes: [SKShapeNode] = []
@@ -56,7 +61,7 @@ class GameScene: SKScene {
     }
     
     // Spawn a note moving Right-to-Left
-    func spawnNote(for noteNumber: UInt8, travelTime: Double = 2.0) {
+    func spawnNote(for noteNumber: UInt8, targetHitTime: TimeInterval, travelTime: TimeInterval = 2.0) {
         guard let laneIndex = midiNotes.firstIndex(of: noteNumber) else { return }
         
         let laneY = (CGFloat(laneIndex) * laneHeight) + (laneHeight / 2)
@@ -67,21 +72,94 @@ class GameScene: SKScene {
         note.strokeColor = .white
         note.position = CGPoint(x: size.width + 20, y: laneY)
         note.name = "note"
-        addChild(note)
         
-        // Action: The horizontal center of the note must intersect the Hit Line at travelTime
-        // Distance to hit line = currentX - hitLineX
+        // Calculate speed
         let distanceToHit = (size.width + 20) - hitLineX
         let speed = distanceToHit / CGFloat(travelTime)
+        
+        // Store metadata for hit detection
+        note.userData = [
+            "targetHitTime": targetHitTime,
+            "lane": noteNumber,
+            "speed": speed
+        ]
+        
+        addChild(note)
         
         // Total distance to fully pass the left edge (x = -40)
         let totalDistance = (size.width + 20) + 40
         let totalDuration = totalDistance / speed
         
         let moveAction = SKAction.moveTo(x: -40, duration: Double(totalDuration))
-        let removeAction = SKAction.removeFromParent()
+        let removeAction = SKAction.run { [weak self, weak note] in
+            // If the note was removed by passing the screen and wasn't hit, it's a miss
+            if let note = note, note.parent != nil {
+                self?.registerMiss()
+            }
+            note?.removeFromParent()
+        }
         
         note.run(SKAction.sequence([moveAction, removeAction]))
+    }
+    
+    // Handle a physical pad hit
+    func handleHit(for noteNumber: UInt8) {
+        // Find notes in this lane that are close to the hit line
+        let activeNotes = children.compactMap { $0 as? SKShapeNode }
+            .filter { $0.name == "note" && ($0.userData?["lane"] as? UInt8) == noteNumber }
+        
+        // Find the one closest to the hit line spatially
+        guard let closestNote = activeNotes.min(by: {
+            abs($0.position.x - hitLineX) < abs($1.position.x - hitLineX)
+        }) else {
+            flashLane(for: noteNumber)
+            return // No note to hit in this lane
+        }
+        
+        let speed = closestNote.userData?["speed"] as? CGFloat ?? 400
+        let distance = closestNote.position.x - hitLineX
+        let timeDiff = abs(Double(distance / speed))
+        
+        var accuracy: HitAccuracy = .miss
+        if timeDiff <= perfectWindow {
+            accuracy = .perfect
+        } else if timeDiff <= goodWindow {
+            accuracy = .good
+        }
+        
+        if accuracy != .miss {
+            showFeedback(accuracy: accuracy, at: closestNote.position)
+            closestNote.removeFromParent() // Note was hit
+            ScoreManager.shared.registerHit(accuracy: accuracy)
+        } else {
+            // Hit was too early or too late, but we don't count it as a miss yet
+            // to allow the note to reach the hit line or be hit later.
+            print("GameScene: Hit detected but outside windows (diff: \(timeDiff)s)")
+        }
+        
+        flashLane(for: noteNumber)
+    }
+    
+    private func registerMiss() {
+        ScoreManager.shared.registerHit(accuracy: .miss)
+        // Show "MISS" feedback at the hit line
+        showFeedback(accuracy: .miss, at: CGPoint(x: hitLineX, y: size.height / 2))
+    }
+    
+    private func showFeedback(accuracy: HitAccuracy, at position: CGPoint) {
+        let label = SKLabelNode(text: accuracy.rawValue)
+        label.fontName = "AvenirNext-Bold"
+        label.fontSize = 24
+        label.fontColor = NSColor(accuracy.color)
+        label.position = position
+        label.zPosition = 10
+        addChild(label)
+        
+        let moveUp = SKAction.moveBy(x: 0, y: 50, duration: 0.5)
+        let fade = SKAction.fadeOut(withDuration: 0.5)
+        let group = SKAction.group([moveUp, fade])
+        let remove = SKAction.removeFromParent()
+        label.run(SKAction.sequence([group, remove]))
     }
     
     // Flash a lane when a hit is detected (at the Hit Line)
@@ -123,6 +201,7 @@ class GameScene: SKScene {
         noteTravelTime: TimeInterval = 2.0
     ) {
         stopAndClear()
+        levelStartTime = CACurrentMediaTime()
         
         print("GameScene: Loading level with \(notes.count) notes, Loop: \(loop), Metro: \(metronome)")
         
@@ -132,14 +211,16 @@ class GameScene: SKScene {
             
             let waitBefore = SKAction.wait(forDuration: spawnDelay)
             let spawn = SKAction.run { [weak self] in
-                self?.spawnNote(for: note.padIndex, travelTime: noteTravelTime)
+                self?.spawnNote(for: note.padIndex, targetHitTime: note.timeSeconds, travelTime: noteTravelTime)
             }
-            let waitAfter = SKAction.wait(forDuration: barDuration - spawnDelay)
             
-            let sequence = SKAction.sequence([waitBefore, spawn, waitAfter])
-            let action = loop ? SKAction.repeatForever(sequence) : sequence
-            // Use a unique key per note to prevent overwriting
-            self.run(action, withKey: "note_loop_\(index)")
+            if loop {
+                let waitAfter = SKAction.wait(forDuration: barDuration - spawnDelay)
+                let sequence = SKAction.sequence([waitBefore, spawn, waitAfter])
+                self.run(SKAction.repeatForever(sequence), withKey: "note_loop_\(index)")
+            } else {
+                self.run(SKAction.sequence([waitBefore, spawn]))
+            }
         }
         
         // 2. Schedule Metronome (4 clicks per bar)
@@ -165,6 +246,7 @@ class GameScene: SKScene {
         self.enumerateChildNodes(withName: "note") { node, _ in
             node.removeFromParent()
         }
+        ScoreManager.shared.reset()
         print("GameScene: Actions and notes cleared.")
     }
 }
