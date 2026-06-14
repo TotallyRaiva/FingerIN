@@ -61,7 +61,6 @@ struct ContentView: View {
         }
         .onAppear { 
             reloadLevel()
-            scene.setPaused(true)
         }
     }
     
@@ -248,6 +247,9 @@ struct ContentView: View {
             metronome: isMetronomeEnabled,
             isDemoMode: isDemoMode
         )
+        
+        // Sync the scene's paused state with the UI state
+        scene.setPaused(!isPlaying)
     }
 }
 

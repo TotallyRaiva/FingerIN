@@ -23,6 +23,9 @@ class GameScene: SKScene {
     private var worldNode = SKNode() // Node to hold everything for screen shake
     
     override func didMove(to view: SKView) {
+        // Force the engine to start in a paused state
+        self.isPaused = true
+        
         // Set anchor point to bottom-left for easier horizontal math
         self.anchorPoint = .zero
         
