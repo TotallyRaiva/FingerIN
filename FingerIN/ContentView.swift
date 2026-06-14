@@ -225,6 +225,11 @@ struct InstrumentToggle: View {
     let note: UInt8
     let color: Color
     @Binding var activePads: Set<UInt8>
+    @ObservedObject var padStatus = PadStatusManager.shared
+    
+    var isHighlighted: Bool {
+        padStatus.isPadHighlighted[note] ?? false
+    }
     
     var body: some View {
         Button(action: {
@@ -234,12 +239,22 @@ struct InstrumentToggle: View {
                 activePads.insert(note)
             }
         }) {
-            Text(name)
-                .font(.caption2).bold()
-                .frame(width: 50, height: 30)
-                .background(activePads.contains(note) ? color.opacity(0.8) : Color.gray.opacity(0.2))
-                .foregroundColor(activePads.contains(note) ? .black : .gray)
-                .cornerRadius(4)
+            VStack(spacing: 4) {
+                Text(name)
+                    .font(.system(size: 8, weight: .black))
+                
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(activePads.contains(note) ? color : Color.gray.opacity(0.2))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.white.opacity(isHighlighted ? 0.8 : 0), lineWidth: 2)
+                    )
+                    .shadow(color: color.opacity(isHighlighted ? 0.6 : 0), radius: 10)
+                    .scaleEffect(isHighlighted ? 1.05 : 1.0)
+            }
+            .foregroundColor(activePads.contains(note) ? .white : .gray)
+            .animation(.spring(response: 0.1, dampingFraction: 0.5), value: isHighlighted)
         }
         .buttonStyle(.plain)
     }

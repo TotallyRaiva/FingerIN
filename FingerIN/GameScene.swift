@@ -227,6 +227,15 @@ class GameScene: SKScene {
             let playSound = SKAction.run { [weak self] in
                 if self?.isDemoMode == true {
                     AudioManager.shared.triggerSound(for: note.padIndex)
+                    
+                    // --- NEW: Visual Pad Flash for Demo Mode ---
+                    PadStatusManager.shared.highlightPad(note.padIndex)
+                    let unhighlight = SKAction.wait(forDuration: 0.1)
+                    let removeAction = SKAction.run {
+                        PadStatusManager.shared.removeHighlight(note.padIndex)
+                    }
+                    self?.run(SKAction.sequence([unhighlight, removeAction]))
+                    // -------------------------------------------
                 }
             }
             

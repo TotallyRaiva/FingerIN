@@ -69,12 +69,12 @@ class MIDIManager: ObservableObject {
     }
     
     private func handleMIDIInput(packetList: UnsafePointer<MIDIPacketList>) {
-        var packetPtr = UnsafeMutablePointer(mutating: packetList).pointee.packet
+        var packetPtr: UnsafeMutablePointer<MIDIPacket> = UnsafeMutablePointer(mutating: &UnsafeMutablePointer(mutating: packetList).pointee.packet)
         let numPackets = packetList.pointee.numPackets
         
         for _ in 0..<numPackets {
-            let data = withUnsafeBytes(of: packetPtr.data) { Array($0) }
-            let length = Int(packetPtr.length)
+            let length = Int(packetPtr.pointee.length)
+            let data = withUnsafeBytes(of: packetPtr.pointee.data) { Array($0.prefix(length)) }
             
             if length >= 3 {
                 let status = data[0]
@@ -82,19 +82,19 @@ class MIDIManager: ObservableObject {
                 let velocity = Int(data[2])
                 
                 if (status & 0xF0) == 0x90 && velocity > 0 {
-                    print("MIDIManager: Note ON [\(note)] Velocity [\(velocity)]")
                     AudioManager.shared.triggerSound(for: UInt8(note))
+                    PadStatusManager.shared.highlightPad(UInt8(note))
                     
                     DispatchQueue.main.async {
                         self.lastNote = note
                         self.lastVelocity = velocity
                     }
+                } else if (status & 0xF0) == 0x80 || ((status & 0xF0) == 0x90 && velocity == 0) {
+                    PadStatusManager.shared.removeHighlight(UInt8(note))
                 }
             }
             
-            // Safe pointer advancement
-            let nextPacket = MIDIPacketNext(&packetPtr)
-            packetPtr = nextPacket.pointee
+            packetPtr = MIDIPacketNext(packetPtr)
         }
     }
 }
