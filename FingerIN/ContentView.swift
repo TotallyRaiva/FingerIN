@@ -25,15 +25,28 @@ struct ContentView: View {
     @State private var scene: GameScene = {
         let scene = GameScene()
         scene.size = CGSize(width: 800, height: 320)
-        scene.scaleMode = .aspectFill
+        scene.scaleMode = .resizeFill
         return scene
     }()
     
     var body: some View {
-        VStack(spacing: 0) {
-            topControlBar
-            gameArea
-            bottomControlBar
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                topControlBar
+                
+                gameArea(totalSize: geometry.size)
+                
+                bottomControlBar
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .onAppear {
+                scene.size = CGSize(width: geometry.size.width - 180, height: 320)
+                reloadLevel()
+            }
+            .onChange(of: geometry.size) { _, newSize in
+                scene.size = CGSize(width: newSize.width - 180, height: 320)
+            }
         }
         .frame(minWidth: 1000, minHeight: 450)
         .onChange(of: currentBPM) { _, _ in reloadLevel() }
@@ -45,7 +58,6 @@ struct ContentView: View {
             currentBPM = newValue.bpm
             reloadLevel() 
         }
-        .onAppear { reloadLevel() }
     }
     
     // MARK: - Subviews
@@ -145,7 +157,7 @@ struct ContentView: View {
         }
     }
     
-    private var gameArea: some View {
+    private func gameArea(totalSize: CGSize) -> some View {
         HStack(alignment: .bottom, spacing: 0) {
             LeftContextPanel()
             
