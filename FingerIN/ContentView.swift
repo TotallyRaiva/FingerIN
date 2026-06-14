@@ -11,13 +11,14 @@ import SpriteKit
 struct ContentView: View {
     @ObservedObject var midiManager = MIDIManager.shared
     @ObservedObject var scoreManager = ScoreManager.shared
+    @ObservedObject var calibration = CalibrationManager.shared
     
     // Practice Engine State
     @State private var currentBPM: Double = 120
     @State private var isLooping: Bool = true
     @State private var isMetronomeEnabled: Bool = false
     @State private var isDemoMode: Bool = false
-    @State private var isPlaying: Bool = true
+    @State private var isPlaying: Bool = false
     @State private var activePads: Set<UInt8> = [12, 13, 14, 15]
     @State private var selectedTemplate: LevelProvider.PatternTemplate = LevelProvider.rock
     
@@ -48,7 +49,7 @@ struct ContentView: View {
                 scene.size = CGSize(width: newSize.width - 180, height: 320)
             }
         }
-        .frame(minWidth: 1000, minHeight: 450)
+        .frame(minWidth: 1100, minHeight: 450) // Increased width for calibration slider
         .onChange(of: currentBPM) { _, _ in reloadLevel() }
         .onChange(of: isLooping) { _, _ in reloadLevel() }
         .onChange(of: isMetronomeEnabled) { _, _ in reloadLevel() }
@@ -58,12 +59,16 @@ struct ContentView: View {
             currentBPM = newValue.bpm
             reloadLevel() 
         }
+        .onAppear { 
+            reloadLevel()
+            scene.setPaused(true)
+        }
     }
     
     // MARK: - Subviews
     
     private var topControlBar: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 15) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("FingerIN").font(.headline).foregroundColor(.white)
                 if let accuracy = scoreManager.lastAccuracy {
@@ -92,6 +97,19 @@ struct ContentView: View {
             Toggle("LOOP", isOn: $isLooping).toggleStyle(.button)
             Toggle("METRO", isOn: $isMetronomeEnabled).toggleStyle(.button)
             Toggle("DEMO", isOn: $isDemoMode).toggleStyle(.button)
+            
+            Divider().frame(height: 20)
+            
+            // Calibration Tool Section
+            HStack(spacing: 5) {
+                Text("CALIB:").font(.system(size: 8)).foregroundColor(.gray)
+                Text(String(format: "%+.0fms", calibration.visualOffset * 1000)).font(.system(size: 10, design: .monospaced)).foregroundColor(.orange)
+                Slider(value: Binding(
+                    get: { calibration.visualOffset },
+                    set: { calibration.saveOffset($0) }
+                ), in: -0.2...0.2)
+                .frame(width: 80)
+            }
             
             Spacer()
             
@@ -207,6 +225,7 @@ struct ContentView: View {
             Button("ROCK") { selectedTemplate = LevelProvider.rock }
             Button("HOUSE") { selectedTemplate = LevelProvider.house }
             Button("BOOM BAP") { selectedTemplate = LevelProvider.boomBap }
+            Button("CALIB") { selectedTemplate = LevelProvider.calibration }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)

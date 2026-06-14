@@ -69,12 +69,13 @@ class MIDIManager: ObservableObject {
     }
     
     private func handleMIDIInput(packetList: UnsafePointer<MIDIPacketList>) {
-        var packetPtr: UnsafeMutablePointer<MIDIPacket> = UnsafeMutablePointer(mutating: &UnsafeMutablePointer(mutating: packetList).pointee.packet)
+        var packetPtr = UnsafeMutablePointer(mutating: &UnsafeMutablePointer(mutating: packetList).pointee.packet)
         let numPackets = packetList.pointee.numPackets
         
         for _ in 0..<numPackets {
-            let length = Int(packetPtr.pointee.length)
-            let data = withUnsafeBytes(of: packetPtr.pointee.data) { Array($0.prefix(length)) }
+            let curPacket = packetPtr.pointee
+            let length = Int(curPacket.length)
+            let data = withUnsafeBytes(of: curPacket.data) { Array($0.prefix(length)) }
             
             if length >= 3 {
                 let status = data[0]

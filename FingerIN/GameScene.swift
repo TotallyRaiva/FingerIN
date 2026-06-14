@@ -104,6 +104,7 @@ class GameScene: SKScene {
         note.run(SKAction.sequence([moveAction, removeAction]))
     }
     
+    // Handle a physical pad hit
     func handleHit(for noteNumber: UInt8) {
         if isDemoMode { flashLane(for: noteNumber); return }
         let currentTime = CACurrentMediaTime() - levelStartTime
@@ -120,7 +121,11 @@ class GameScene: SKScene {
         
         let speed = closestNote.userData?["speed"] as? CGFloat ?? 400
         let distance = closestNote.position.x - hitLineX
-        let timeDiff = abs(Double(distance / speed))
+        
+        // --- CALIBRATION: Apply visual offset ---
+        let rawTimeDiff = Double(distance / speed)
+        let timeDiff = abs(rawTimeDiff - CalibrationManager.shared.visualOffset)
+        // -----------------------------------------
         
         var accuracy: HitAccuracy = .miss
         if timeDiff <= perfectWindow { accuracy = .perfect }
@@ -131,6 +136,9 @@ class GameScene: SKScene {
             triggerHitEffects(accuracy: accuracy, position: closestNote.position)
             closestNote.removeFromParent()
             ScoreManager.shared.registerHit(accuracy: accuracy)
+            
+            // Record hit for calibration if we're in a special calibration mode (optional enhancement)
+            // For now, it just respects the global offset
         }
         flashLane(for: noteNumber)
     }
