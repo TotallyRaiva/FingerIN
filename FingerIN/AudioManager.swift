@@ -2,12 +2,26 @@ import Foundation
 import AVFoundation
 import SwiftUI
 import Combine
+import os
 
 @MainActor
 class AudioManager: ObservableObject {
     static let shared = AudioManager()
     
-    @Published var currentKit: DrumKit = .mpcLoFi
+    @Published var currentKit: DrumKit = .mpcLoFi {
+        didSet {
+            syncRealtimeState()
+        }
+    }
+    
+    @Published var sampleLatencyMode: SampleLatencyMode = .tight {
+        didSet {
+            UserDefaults.standard.set(sampleLatencyMode.rawValue, forKey: latencyDefaultsKey)
+            syncRealtimeState()
+        }
+    }
+    
+    private let latencyDefaultsKey = "FingerIN.sampleLatencyMode"
     
     private let engine = AVAudioEngine()
     private let mixer = AVAudioMixerNode()
@@ -16,7 +30,6 @@ class AudioManager: ObservableObject {
     // Pool of player nodes to handle drum polyphony
     private var playerNodes: [AVAudioPlayerNode] = []
     private let poolSize = 16
-    private var currentPlayerIndex = 0
     
     // Dedicated player nodes for metronome and musical accompaniment (Bass + Rhodes/Synth Chords)
     private let metronomeNode = AVAudioPlayerNode()
@@ -26,10 +39,7 @@ class AudioManager: ObservableObject {
     private var metronomeAccentBuffer: AVAudioPCMBuffer?
     private var metronomeRegularBuffer: AVAudioPCMBuffer?
     
-    // Track active Open Hi-Hat node for realistic Hi-Hat choke when Closed Hi-Hat is struck
-    private weak var activeOpenHatNode: AVAudioPlayerNode?
-    
-    private enum VelocityTier: Int, CaseIterable {
+    nonisolated private enum VelocityTier: Int, CaseIterable, Sendable {
         case ghost = 0
         case normal = 1
         case accent = 2
@@ -41,11 +51,25 @@ class AudioManager: ObservableObject {
         }
     }
     
-    private struct KitSampleKey: Hashable {
+    nonisolated private struct KitSampleKey: Hashable, Sendable {
         let kit: DrumKit
+        let latencyMode: SampleLatencyMode
         let note: UInt8
         let tier: VelocityTier
     }
+    
+    // Thread-safe real-time audio trigger state so CoreMIDI can schedule buffers with zero MainActor hop latency
+    nonisolated private struct RealtimeAudioState: @unchecked Sendable {
+        var currentKit: DrumKit = .mpcLoFi
+        var latencyMode: SampleLatencyMode = .tight
+        var currentPlayerIndex: Int = 0
+        var activeOpenHatNode: AVAudioPlayerNode? = nil
+        var kitBuffers: [KitSampleKey: AVAudioPCMBuffer] = [:]
+        var rawBuffers: [UInt8: AVAudioPCMBuffer] = [:]
+        var playerNodes: [AVAudioPlayerNode] = []
+    }
+    
+    nonisolated private let rtLock = OSAllocatedUnfairLock(initialState: RealtimeAudioState())
     
     // Raw loaded acoustic buffers and multi-kit sculpted/synthesized buffers
     private var rawBuffers: [UInt8: AVAudioPCMBuffer] = [:]
@@ -55,15 +79,28 @@ class AudioManager: ObservableObject {
     private struct BassCacheKey: Hashable {
         let midiNote: UInt8
         let durationMs: Int
-        let kit: DrumKit
     }
     private struct ChordCacheKey: Hashable {
         let midiNotes: [UInt8]
         let durationMs: Int
-        let kit: DrumKit
     }
     private var bassBufferCache: [BassCacheKey: AVAudioPCMBuffer] = [:]
     private var chordBufferCache: [ChordCacheKey: AVAudioPCMBuffer] = [:]
+    
+    // Fast 4096-entry sine lookup table for sub-millisecond chord/bass buffer generation
+    private static let sinLUTSize = 4096
+    private static let sinLUTMask = 4095
+    private static let sinLUT: [Float] = {
+        (0..<4096).map { i in
+            sin(Float(Double(i) * 2.0 * .pi / 4096.0))
+        }
+    }()
+    
+    @inline(__always)
+    private static func fastSinUnit(_ normalizedPhase: Double) -> Float {
+        let idx = Int(normalizedPhase * Double(sinLUTSize)) & sinLUTMask
+        return sinLUT[idx]
+    }
     
     private let sampleRate: Double = 44_100.0
     private var stereoFormat: AVAudioFormat!
@@ -76,20 +113,41 @@ class AudioManager: ObservableObject {
     ]
     
     private init() {
+        if let saved = UserDefaults.standard.string(forKey: latencyDefaultsKey),
+           let mode = SampleLatencyMode(rawValue: saved) {
+            self.sampleLatencyMode = mode
+        }
         stereoFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)
         setupEngine()
         loadRawSamples()
         buildAllKitVoicings()
         buildMetronomeBuffers()
+        syncRealtimeState()
+    }
+    
+    private func syncRealtimeState() {
+        let kit = self.currentKit
+        let mode = self.sampleLatencyMode
+        let kBuffers = self.kitBuffers
+        let rBuffers = self.rawBuffers
+        let nodes = self.playerNodes
+        rtLock.withLock { state in
+            state.currentKit = kit
+            state.latencyMode = mode
+            if state.kitBuffers.isEmpty {
+                state.kitBuffers = kBuffers
+                state.rawBuffers = rBuffers
+                state.playerNodes = nodes
+            }
+        }
     }
     
     private func setupEngine() {
         engine.attach(mixer)
         engine.attach(reverb)
         
-        // Studio room ambience so drum kits feel like a real room rather than dry test clicks
         reverb.loadFactoryPreset(.smallRoom)
-        reverb.wetDryMix = 12.0
+        reverb.wetDryMix = 10.0
         
         let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
         engine.connect(mixer, to: reverb, format: stereoFormat)
@@ -115,6 +173,13 @@ class AudioManager: ObservableObject {
             if !engine.isRunning {
                 try engine.start()
             }
+            // Pre-start all player nodes so scheduling buffers with .interrupts has zero start-up latency
+            for node in playerNodes where !node.isPlaying {
+                node.play()
+            }
+            for node in [metronomeNode, bassNode, chordNode] where !node.isPlaying {
+                node.play()
+            }
         } catch {
             print("AudioManager: Could not start AVAudioEngine: \(error)")
         }
@@ -139,15 +204,22 @@ class AudioManager: ObservableObject {
         }
     }
     
-    // MARK: - Multi-Kit Studio Voicing & Hybrid Drum Synthesis
+    // MARK: - Multi-Kit Studio Voicing & Sample Latency Trim
     
     private func buildAllKitVoicings() {
-        for kit in DrumKit.allCases {
-            for tier in VelocityTier.allCases {
-                kitBuffers[KitSampleKey(kit: kit, note: 12, tier: tier)] = makeKickBuffer(kit: kit, tier: tier)
-                kitBuffers[KitSampleKey(kit: kit, note: 13, tier: tier)] = makeSnareBuffer(kit: kit, tier: tier)
-                kitBuffers[KitSampleKey(kit: kit, note: 14, tier: tier)] = makeClosedHatBuffer(kit: kit, tier: tier)
-                kitBuffers[KitSampleKey(kit: kit, note: 15, tier: tier)] = makeOpenHatBuffer(kit: kit, tier: tier)
+        for mode in SampleLatencyMode.allCases {
+            let trimFrames = mode.trimMilliseconds * 0.001 * sampleRate
+            for kit in DrumKit.allCases {
+                for tier in VelocityTier.allCases {
+                    kitBuffers[KitSampleKey(kit: kit, latencyMode: mode, note: 12, tier: tier)] =
+                        makeKickBuffer(kit: kit, tier: tier, trimOffsetFrames: trimFrames * 0.5)
+                    kitBuffers[KitSampleKey(kit: kit, latencyMode: mode, note: 13, tier: tier)] =
+                        makeSnareBuffer(kit: kit, tier: tier, trimOffsetFrames: trimFrames)
+                    kitBuffers[KitSampleKey(kit: kit, latencyMode: mode, note: 14, tier: tier)] =
+                        makeClosedHatBuffer(kit: kit, tier: tier, trimOffsetFrames: trimFrames)
+                    kitBuffers[KitSampleKey(kit: kit, latencyMode: mode, note: 15, tier: tier)] =
+                        makeOpenHatBuffer(kit: kit, tier: tier, trimOffsetFrames: trimFrames * 1.3)
+                }
             }
         }
     }
@@ -162,14 +234,14 @@ class AudioManager: ObservableObject {
         return data[ch][idx] * (1.0 - frac) + data[ch][idx + 1] * frac
     }
     
-    private func makeKickBuffer(kit: DrumKit, tier: VelocityTier) -> AVAudioPCMBuffer? {
+    private func makeKickBuffer(kit: DrumKit, tier: VelocityTier, trimOffsetFrames: Double) -> AVAudioPCMBuffer? {
         let duration: Double
         switch kit {
-        case .trap808: duration = 0.52
-        case .club909: duration = 0.34
-        case .mpcLoFi: duration = 0.32
-        case .funkBreak: duration = 0.24
-        case .studioAcoustic: duration = 0.32
+        case .trap808: duration = 0.50
+        case .club909: duration = 0.32
+        case .mpcLoFi: duration = 0.30
+        case .funkBreak: duration = 0.23
+        case .studioAcoustic: duration = 0.30
         }
         
         let frames = AVAudioFrameCount(sampleRate * duration)
@@ -178,11 +250,12 @@ class AudioManager: ObservableObject {
         out.frameLength = frames
         
         let tierGain: Float = (tier == .ghost) ? 0.55 : (tier == .accent ? 1.0 : 0.82)
-        let clickLevel: Float = (tier == .accent) ? 0.45 : (tier == .normal ? 0.28 : 0.12)
+        let clickLevel: Float = (tier == .accent) ? 0.48 : (tier == .normal ? 0.30 : 0.14)
         
         var phase: Double = 0.0
         for i in 0..<Int(frames) {
             let t = Double(i) / sampleRate
+            let microFade = Float(min(1.0, Double(i) / 16.0))
             let synthSample: Float
             let rawRate: Double
             let rawMix: Float
@@ -190,51 +263,51 @@ class AudioManager: ObservableObject {
             switch kit {
             case .trap808:
                 let freq = 42.0 + 115.0 * exp(-t * 48.0)
-                phase += 2.0 * .pi * freq / sampleRate
+                phase += freq / sampleRate
                 let subEnv = Float(exp(-t * 5.2))
-                let click = Float(exp(-t * 220.0)) * sin(Float(t * 2600.0)) * clickLevel
-                synthSample = tanh((sin(Float(phase)) * subEnv * 1.35) + click)
+                let click = Float(exp(-t * 220.0)) * Self.fastSinUnit(t * 415.0) * clickLevel
+                synthSample = tanh((Self.fastSinUnit(phase) * subEnv * 1.35) + click)
                 rawRate = 0.85
                 rawMix = 0.18
                 
             case .club909:
                 let freq = 49.0 + 140.0 * exp(-t * 55.0)
-                phase += 2.0 * .pi * freq / sampleRate
+                phase += freq / sampleRate
                 let env = Float(exp(-t * 10.5))
-                let click = Float(exp(-t * 260.0)) * sin(Float(t * 3200.0)) * (clickLevel * 1.2)
-                synthSample = tanh((sin(Float(phase)) * env * 1.4) + click)
+                let click = Float(exp(-t * 260.0)) * Self.fastSinUnit(t * 510.0) * (clickLevel * 1.2)
+                synthSample = tanh((Self.fastSinUnit(phase) * env * 1.4) + click)
                 rawRate = 1.0
                 rawMix = 0.25
                 
             case .mpcLoFi:
                 let freq = 51.0 + 90.0 * exp(-t * 42.0)
-                phase += 2.0 * .pi * freq / sampleRate
+                phase += freq / sampleRate
                 let env = Float(exp(-t * 11.5))
-                synthSample = tanh(sin(Float(phase)) * env * 1.25)
+                synthSample = tanh(Self.fastSinUnit(phase) * env * 1.25)
                 rawRate = 0.90
                 rawMix = 0.65
                 
             case .funkBreak:
                 let freq = 62.0 + 110.0 * exp(-t * 65.0)
-                phase += 2.0 * .pi * freq / sampleRate
+                phase += freq / sampleRate
                 let env = Float(exp(-t * 16.0))
-                synthSample = sin(Float(phase)) * env * 0.95
+                synthSample = Self.fastSinUnit(phase) * env * 0.95
                 rawRate = 1.08
                 rawMix = 0.75
                 
             case .studioAcoustic:
                 let freq = 52.0 + 95.0 * exp(-t * 50.0)
-                phase += 2.0 * .pi * freq / sampleRate
+                phase += freq / sampleRate
                 let env = Float(exp(-t * 12.0))
-                synthSample = sin(Float(phase)) * env * 0.75
+                synthSample = Self.fastSinUnit(phase) * env * 0.75
                 rawRate = 1.0
                 rawMix = 0.82
             }
             
-            let sampleIdx = Double(i) * rawRate
+            let sampleIdx = trimOffsetFrames + Double(i) * rawRate
             let envTail = Float(exp(-t * (kit == .trap808 ? 4.5 : 10.0)))
-            let rawL = rawSampleValue(note: 12, channel: 0, sampleIndex: sampleIdx) * envTail
-            let rawR = rawSampleValue(note: 12, channel: 1, sampleIndex: sampleIdx) * envTail
+            let rawL = rawSampleValue(note: 12, channel: 0, sampleIndex: sampleIdx) * envTail * microFade
+            let rawR = rawSampleValue(note: 12, channel: 1, sampleIndex: sampleIdx) * envTail * microFade
             
             outData[0][i] = tanh((rawL * rawMix + synthSample) * tierGain)
             outData[1][i] = tanh((rawR * rawMix + synthSample) * tierGain)
@@ -242,8 +315,8 @@ class AudioManager: ObservableObject {
         return out
     }
     
-    private func makeSnareBuffer(kit: DrumKit, tier: VelocityTier) -> AVAudioPCMBuffer? {
-        let duration: Double = (tier == .ghost) ? 0.16 : 0.34
+    private func makeSnareBuffer(kit: DrumKit, tier: VelocityTier, trimOffsetFrames: Double) -> AVAudioPCMBuffer? {
+        let duration: Double = (tier == .ghost) ? 0.15 : 0.32
         let frames = AVAudioFrameCount(sampleRate * duration)
         guard let out = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: frames),
               let outData = out.floatChannelData else { return nil }
@@ -252,8 +325,7 @@ class AudioManager: ObservableObject {
         let tierGain: Float = (tier == .ghost) ? 0.38 : (tier == .accent ? 1.0 : 0.80)
         var lpStateL: Float = 0.0
         var lpStateR: Float = 0.0
-        // Ghost notes get a warmer low-pass rolloff so they sound like real soft stick taps
-        let filterAlpha: Float = (tier == .ghost) ? 0.28 : (tier == .accent ? 0.92 : 0.68)
+        let filterAlpha: Float = (tier == .ghost) ? 0.30 : (tier == .accent ? 0.92 : 0.70)
         
         var rngState: UInt64 = 0x1234_5678_9ABC_DEF0
         func nextNoise() -> Float {
@@ -264,6 +336,7 @@ class AudioManager: ObservableObject {
         
         for i in 0..<Int(frames) {
             let t = Double(i) / sampleRate
+            let microFade = Float(min(1.0, Double(i) / 14.0))
             let noiseL = nextNoise()
             let noiseR = nextNoise()
             
@@ -274,8 +347,7 @@ class AudioManager: ObservableObject {
             
             switch kit {
             case .trap808:
-                let body = sin(Float(2.0 * .pi * 215.0 * t)) * Float(exp(-t * 38.0)) * 0.65
-                // Layered clap/snap burst on accents
+                let body = Self.fastSinUnit(215.0 * t) * Float(exp(-t * 38.0)) * 0.65
                 let clapEnv = (t < 0.022 && Int(t * 450) % 2 == 0) ? Float(0.7) : Float(exp(-t * 26.0))
                 let snap = clapEnv * ((tier == .accent) ? 0.75 : 0.45)
                 synthL = body + noiseL * snap
@@ -284,7 +356,7 @@ class AudioManager: ObservableObject {
                 rawMix = 0.45
                 
             case .club909:
-                let body = (sin(Float(2.0 * .pi * 185.0 * t)) + 0.6 * sin(Float(2.0 * .pi * 330.0 * t))) * Float(exp(-t * 30.0)) * 0.5
+                let body = (Self.fastSinUnit(185.0 * t) + 0.6 * Self.fastSinUnit(330.0 * t)) * Float(exp(-t * 30.0)) * 0.5
                 let wireEnv = Float(exp(-t * (tier == .ghost ? 28.0 : 14.0)))
                 synthL = body + noiseL * wireEnv * 0.55
                 synthR = body + noiseR * wireEnv * 0.55
@@ -292,7 +364,7 @@ class AudioManager: ObservableObject {
                 rawMix = 0.55
                 
             case .mpcLoFi:
-                let body = sin(Float(2.0 * .pi * 195.0 * t)) * Float(exp(-t * 34.0)) * 0.55
+                let body = Self.fastSinUnit(195.0 * t) * Float(exp(-t * 34.0)) * 0.55
                 let wireEnv = Float(exp(-t * (tier == .ghost ? 30.0 : 17.0)))
                 synthL = body + noiseL * wireEnv * 0.35
                 synthR = body + noiseR * wireEnv * 0.35
@@ -300,7 +372,7 @@ class AudioManager: ObservableObject {
                 rawMix = 0.85
                 
             case .funkBreak:
-                let rimCrack = (tier == .accent) ? sin(Float(2.0 * .pi * 490.0 * t)) * Float(exp(-t * 95.0)) * 0.55 : 0.0
+                let rimCrack = (tier == .accent) ? Self.fastSinUnit(490.0 * t) * Float(exp(-t * 95.0)) * 0.55 : 0.0
                 let wireEnv = Float(exp(-t * (tier == .ghost ? 34.0 : 19.0)))
                 synthL = rimCrack + noiseL * wireEnv * 0.28
                 synthR = rimCrack + noiseR * wireEnv * 0.28
@@ -308,7 +380,7 @@ class AudioManager: ObservableObject {
                 rawMix = 0.88
                 
             case .studioAcoustic:
-                let rimCrack = (tier == .accent) ? sin(Float(2.0 * .pi * 420.0 * t)) * Float(exp(-t * 85.0)) * 0.35 : 0.0
+                let rimCrack = (tier == .accent) ? Self.fastSinUnit(420.0 * t) * Float(exp(-t * 85.0)) * 0.35 : 0.0
                 let wireEnv = Float(exp(-t * (tier == .ghost ? 28.0 : 15.0)))
                 synthL = rimCrack + noiseL * wireEnv * 0.22
                 synthR = rimCrack + noiseR * wireEnv * 0.22
@@ -316,10 +388,10 @@ class AudioManager: ObservableObject {
                 rawMix = 0.92
             }
             
-            let sampleIdx = Double(i) * rawRate
+            let sampleIdx = trimOffsetFrames + Double(i) * rawRate
             let envGate = Float(exp(-t * (tier == .ghost ? 20.0 : 8.5)))
-            let rawL = rawSampleValue(note: 13, channel: 0, sampleIndex: sampleIdx) * envGate
-            let rawR = rawSampleValue(note: 13, channel: 1, sampleIndex: sampleIdx) * envGate
+            let rawL = rawSampleValue(note: 13, channel: 0, sampleIndex: sampleIdx) * envGate * microFade
+            let rawR = rawSampleValue(note: 13, channel: 1, sampleIndex: sampleIdx) * envGate * microFade
             
             let combinedL = rawL * rawMix + synthL
             let combinedR = rawR * rawMix + synthR
@@ -332,9 +404,8 @@ class AudioManager: ObservableObject {
         return out
     }
     
-    /// Fixes the raw 700ms `hihat_closed.wav` into a tight, musical closed hi-hat (55ms–95ms)
-    private func makeClosedHatBuffer(kit: DrumKit, tier: VelocityTier) -> AVAudioPCMBuffer? {
-        let duration: Double = (tier == .ghost) ? 0.065 : 0.115
+    private func makeClosedHatBuffer(kit: DrumKit, tier: VelocityTier, trimOffsetFrames: Double) -> AVAudioPCMBuffer? {
+        let duration: Double = (tier == .ghost) ? 0.062 : 0.110
         let frames = AVAudioFrameCount(sampleRate * duration)
         guard let out = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: frames),
               let outData = out.floatChannelData else { return nil }
@@ -370,16 +441,16 @@ class AudioManager: ObservableObject {
         
         for i in 0..<Int(frames) {
             let t = Double(i) / sampleRate
+            let microFade = Float(min(1.0, Double(i) / 10.0))
             let env = Float(exp(-t * decayRate))
-            // High-frequency metallic shimmer partials
-            let m1 = sin(Float(2.0 * .pi * 6340.0 * t))
-            let m2 = sin(Float(2.0 * .pi * 8920.0 * t))
-            let m3 = sin(Float(2.0 * .pi * 11450.0 * t))
+            let m1 = Self.fastSinUnit(6340.0 * t)
+            let m2 = Self.fastSinUnit(8920.0 * t)
+            let m3 = Self.fastSinUnit(11450.0 * t)
             let metallic = (m1 + m2 + m3) * 0.25 * metallicMix * env
             
-            let sampleIdx = Double(i) * rawRate
-            let rawL = rawSampleValue(note: 14, channel: 0, sampleIndex: sampleIdx) * env
-            let rawR = rawSampleValue(note: 14, channel: 1, sampleIndex: sampleIdx) * env
+            let sampleIdx = trimOffsetFrames + Double(i) * rawRate
+            let rawL = rawSampleValue(note: 14, channel: 0, sampleIndex: sampleIdx) * env * microFade
+            let rawR = rawSampleValue(note: 14, channel: 1, sampleIndex: sampleIdx) * env * microFade
             
             outData[0][i] = (rawL * 0.85 + metallic) * tierGain
             outData[1][i] = (rawR * 0.85 - metallic) * tierGain
@@ -387,9 +458,8 @@ class AudioManager: ObservableObject {
         return out
     }
     
-    /// Extends and voices the Open Hi-Hat (360ms–480ms) so it rings lushly until choked by Closed Hi-Hat
-    private func makeOpenHatBuffer(kit: DrumKit, tier: VelocityTier) -> AVAudioPCMBuffer? {
-        let duration: Double = 0.46
+    private func makeOpenHatBuffer(kit: DrumKit, tier: VelocityTier, trimOffsetFrames: Double) -> AVAudioPCMBuffer? {
+        let duration: Double = 0.45
         let frames = AVAudioFrameCount(sampleRate * duration)
         guard let out = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: frames),
               let outData = out.floatChannelData else { return nil }
@@ -405,6 +475,7 @@ class AudioManager: ObservableObject {
         
         for i in 0..<Int(frames) {
             let t = Double(i) / sampleRate
+            let microFade = Float(min(1.0, Double(i) / 12.0))
             let env = Float(exp(-t * decayRate))
             
             rng = rng &* 6364136223846793005 &+ 1
@@ -412,19 +483,18 @@ class AudioManager: ObservableObject {
             rng = rng &* 6364136223846793005 &+ 1
             let nR = Float(Int32(truncatingIfNeeded: rng >> 32)) / Float(Int32.max)
             
-            // High-passed cymbal sizzle + metallic partials
             let hpL = nL - hpPrevL
             let hpR = nR - hpPrevR
             hpPrevL = nL * 0.82
             hpPrevR = nR * 0.82
             
-            let shimmer = (sin(Float(2.0 * .pi * 5820.0 * t)) + sin(Float(2.0 * .pi * 8310.0 * t))) * 0.16
+            let shimmer = (Self.fastSinUnit(5820.0 * t) + Self.fastSinUnit(8310.0 * t)) * 0.16
             let cymbalTailL = (hpL * 0.26 + shimmer) * env
             let cymbalTailR = (hpR * 0.26 - shimmer) * env
             
-            let sampleIdx = Double(i) * rawRate
-            let rawL = rawSampleValue(note: 15, channel: 0, sampleIndex: sampleIdx) * env
-            let rawR = rawSampleValue(note: 15, channel: 1, sampleIndex: sampleIdx) * env
+            let sampleIdx = trimOffsetFrames + Double(i) * rawRate
+            let rawL = rawSampleValue(note: 15, channel: 0, sampleIndex: sampleIdx) * env * microFade
+            let rawR = rawSampleValue(note: 15, channel: 1, sampleIndex: sampleIdx) * env * microFade
             
             outData[0][i] = tanh((rawL * 0.85 + cymbalTailL) * tierGain)
             outData[1][i] = tanh((rawR * 0.85 + cymbalTailR) * tierGain)
@@ -432,58 +502,97 @@ class AudioManager: ObservableObject {
         return out
     }
     
-    // MARK: - Drum Triggering
+    // MARK: - Zero-Latency Drum Triggering (Callable from both CoreMIDI RT Thread & MainActor)
+    
+    /// Thread-safe immediate trigger usable directly on the CoreMIDI real-time thread
+    nonisolated func triggerSoundRealtime(for noteNumber: UInt8, velocity: UInt8 = 100) {
+        let tier = VelocityTier.from(velocity: velocity)
+        let clampedVelocity = max(1, min(127, Int(velocity)))
+        let velocityScale = 0.35 + 0.65 * (Float(clampedVelocity) / 127.0)
+        
+        let (targetNode, targetBuffer, openHatToChoke) = rtLock.withLock { state -> (AVAudioPlayerNode?, AVAudioPCMBuffer?, AVAudioPlayerNode?) in
+            guard !state.playerNodes.isEmpty else { return (nil, nil, nil) }
+            let key = KitSampleKey(
+                kit: state.currentKit,
+                latencyMode: state.latencyMode,
+                note: noteNumber,
+                tier: tier
+            )
+            guard let buf = state.kitBuffers[key] ?? state.rawBuffers[noteNumber] else { return (nil, nil, nil) }
+            
+            var choke: AVAudioPlayerNode? = nil
+            if noteNumber == 14, let openHat = state.activeOpenHatNode {
+                choke = openHat
+                state.activeOpenHatNode = nil
+            }
+            
+            let node = state.playerNodes[state.currentPlayerIndex]
+            state.currentPlayerIndex = (state.currentPlayerIndex + 1) % state.playerNodes.count
+            if noteNumber == 15 {
+                state.activeOpenHatNode = node
+            }
+            return (node, buf, choke)
+        }
+        
+        // Choke Open Hi-Hat if Closed Hi-Hat was struck
+        if let chokeNode = openHatToChoke {
+            // Schedule silence/interrupt rather than full stop() so node stays primed
+            chokeNode.stop()
+            chokeNode.play()
+        }
+        
+        if let playerNode = targetNode, let buffer = targetBuffer {
+            playerNode.volume = min(1.0, velocityScale)
+            if !playerNode.isPlaying {
+                playerNode.play()
+            }
+            playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+        }
+    }
     
     func triggerSound(for noteNumber: UInt8, velocity: UInt8 = 100) {
         if !engine.isRunning {
             startEngine()
         }
-        
-        let tier = VelocityTier.from(velocity: velocity)
-        let key = KitSampleKey(kit: currentKit, note: noteNumber, tier: tier)
-        guard let buffer = kitBuffers[key] ?? rawBuffers[noteNumber] else {
-            return
-        }
-        
-        // Hi-Hat Choke Group: Closed Hi-Hat (14) chokes ringing Open Hi-Hat (15)
-        if noteNumber == 14, let openHat = activeOpenHatNode, openHat.isPlaying {
-            openHat.stop()
-            activeOpenHatNode = nil
-        }
-        
-        let playerNode = playerNodes[currentPlayerIndex]
-        currentPlayerIndex = (currentPlayerIndex + 1) % poolSize
-        
-        if playerNode.isPlaying {
-            playerNode.stop()
-        }
-        
-        // Subtle humanized micro-variation so 16th-note patterns never sound robotic
-        let humanVariation = Float.random(in: 0.96...1.04)
-        let clampedVelocity = max(1, min(127, Int(velocity)))
-        let velocityScale = 0.35 + 0.65 * (Float(clampedVelocity) / 127.0)
-        playerNode.volume = min(1.0, velocityScale * humanVariation)
-        
-        if noteNumber == 15 {
-            activeOpenHatNode = playerNode
-        }
-        
-        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-        playerNode.play()
+        triggerSoundRealtime(for: noteNumber, velocity: velocity)
     }
     
-    // MARK: - Musical Backing Track Synth (Warm Bassline + Rhodes / Synth Chords)
+    // MARK: - Musical Backing Track Synth (Pre-Warmed & LUT-Accelerated)
+    
+    /// Pre-generates all Bass and Rhodes Chord buffers for a pattern so zero synthesis occurs during gameplay
+    func prewarmBacking(events: [BackingStepEvent], stepDuration: TimeInterval) {
+        for event in events {
+            if let bassMIDI = event.bassMIDINote, event.bassDurationSteps > 0 {
+                let durationSec = max(0.12, min(2.5, event.bassDurationSteps * stepDuration))
+                let durationMs = Int((durationSec * 1000.0).rounded())
+                let key = BassCacheKey(midiNote: bassMIDI, durationMs: durationMs)
+                if bassBufferCache[key] == nil,
+                   let generated = makeBassBuffer(midiNote: bassMIDI, duration: durationSec) {
+                    bassBufferCache[key] = generated
+                }
+            }
+            if !event.chordMIDINotes.isEmpty && event.chordDurationSteps > 0 {
+                let durationSec = max(0.18, min(3.5, event.chordDurationSteps * stepDuration))
+                let durationMs = Int((durationSec * 1000.0).rounded())
+                let key = ChordCacheKey(midiNotes: event.chordMIDINotes, durationMs: durationMs)
+                if chordBufferCache[key] == nil,
+                   let generated = makeChordBuffer(midiNotes: event.chordMIDINotes, duration: durationSec) {
+                    chordBufferCache[key] = generated
+                }
+            }
+        }
+    }
     
     func playBackingEvent(_ event: BackingStepEvent, stepDuration: TimeInterval) {
         if !engine.isRunning {
             startEngine()
         }
         
-        // 1. Trigger Bass Note if present on this step
+        // 1. Trigger Bass Note
         if let bassMIDI = event.bassMIDINote, event.bassDurationSteps > 0 {
             let durationSec = max(0.12, min(2.5, event.bassDurationSteps * stepDuration))
             let durationMs = Int((durationSec * 1000.0).rounded())
-            let cacheKey = BassCacheKey(midiNote: bassMIDI, durationMs: durationMs, kit: currentKit)
+            let cacheKey = BassCacheKey(midiNote: bassMIDI, durationMs: durationMs)
             
             let buffer: AVAudioPCMBuffer?
             if let cached = bassBufferCache[cacheKey] {
@@ -496,18 +605,17 @@ class AudioManager: ObservableObject {
             }
             
             if let buffer = buffer {
-                if bassNode.isPlaying { bassNode.stop() }
                 bassNode.volume = 0.68
+                if !bassNode.isPlaying { bassNode.play() }
                 bassNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-                bassNode.play()
             }
         }
         
-        // 2. Trigger Rhodes / Synth Chord if present on this step
+        // 2. Trigger Rhodes / Synth Chord
         if !event.chordMIDINotes.isEmpty && event.chordDurationSteps > 0 {
             let durationSec = max(0.18, min(3.5, event.chordDurationSteps * stepDuration))
             let durationMs = Int((durationSec * 1000.0).rounded())
-            let cacheKey = ChordCacheKey(midiNotes: event.chordMIDINotes, durationMs: durationMs, kit: currentKit)
+            let cacheKey = ChordCacheKey(midiNotes: event.chordMIDINotes, durationMs: durationMs)
             
             let buffer: AVAudioPCMBuffer?
             if let cached = chordBufferCache[cacheKey] {
@@ -520,20 +628,21 @@ class AudioManager: ObservableObject {
             }
             
             if let buffer = buffer {
-                if chordNode.isPlaying { chordNode.stop() }
                 chordNode.volume = 0.52
+                if !chordNode.isPlaying { chordNode.play() }
                 chordNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-                chordNode.play()
             }
         }
     }
     
     func stopBackingAudio() {
-        if bassNode.isPlaying { bassNode.stop() }
-        if chordNode.isPlaying { chordNode.stop() }
-        if let openHat = activeOpenHatNode, openHat.isPlaying {
-            openHat.stop()
-            activeOpenHatNode = nil
+        if bassNode.isPlaying {
+            bassNode.stop()
+            bassNode.play()
+        }
+        if chordNode.isPlaying {
+            chordNode.stop()
+            chordNode.play()
         }
     }
     
@@ -541,7 +650,6 @@ class AudioManager: ObservableObject {
         440.0 * pow(2.0, (Double(note) - 69.0) / 12.0)
     }
     
-    /// Synthesizes a warm fingered/sub bass note with filter pluck envelope
     private func makeBassBuffer(midiNote: UInt8, duration: Double) -> AVAudioPCMBuffer? {
         let frames = AVAudioFrameCount(sampleRate * duration)
         guard let out = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: frames),
@@ -553,16 +661,15 @@ class AudioManager: ObservableObject {
         
         for i in 0..<Int(frames) {
             let t = Double(i) / sampleRate
-            let attack = Float(min(1.0, t / 0.008))
+            let attack = Float(min(1.0, t / 0.006))
             let release = t > releaseStart ? Float(max(0.0, 1.0 - (t - releaseStart) / 0.04)) : 1.0
             let sustainDecay = Float(exp(-t * 2.2))
             let env = attack * sustainDecay * release
             
-            // Warm fundamental + plucked 2nd & 3rd harmonics that mellow out quickly
             let pluckEnv = Float(exp(-t * 18.0))
-            let f1 = sin(Float(2.0 * .pi * freq * t))
-            let f2 = sin(Float(2.0 * .pi * (freq * 2.0) * t)) * (0.38 * pluckEnv + 0.12)
-            let f3 = sin(Float(2.0 * .pi * (freq * 3.0) * t)) * (0.18 * pluckEnv)
+            let f1 = Self.fastSinUnit(freq * t)
+            let f2 = Self.fastSinUnit(freq * 2.0 * t) * (0.38 * pluckEnv + 0.12)
+            let f3 = Self.fastSinUnit(freq * 3.0 * t) * (0.18 * pluckEnv)
             
             let sample = tanh((f1 + f2 + f3) * env * 0.55)
             outData[0][i] = sample
@@ -571,7 +678,6 @@ class AudioManager: ObservableObject {
         return out
     }
     
-    /// Synthesizes a warm stereo Fender Rhodes / Electric Piano chord voicing with gentle chorus
     private func makeChordBuffer(midiNotes: [UInt8], duration: Double) -> AVAudioPCMBuffer? {
         let frames = AVAudioFrameCount(sampleRate * duration)
         guard let out = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: frames),
@@ -584,26 +690,25 @@ class AudioManager: ObservableObject {
         
         for i in 0..<Int(frames) {
             let t = Double(i) / sampleRate
-            let attack = Float(min(1.0, t / 0.012))
+            let attack = Float(min(1.0, t / 0.010))
             let release = t > releaseStart ? Float(max(0.0, 1.0 - (t - releaseStart) / 0.06)) : 1.0
             let bodyEnv = Float(exp(-t * 1.6)) * attack * release
             let tineEnv = Float(exp(-t * 16.0)) * attack
             
-            // Subtle stereo tremolo / chorus movement
-            let lfo = 0.08 * sin(Float(2.0 * .pi * 4.2 * t))
+            let lfo = 0.08 * Self.fastSinUnit(4.2 * t)
             var sumL: Float = 0.0
             var sumR: Float = 0.0
             
             for (idx, f) in freqs.enumerated() {
                 let detuneL = f * (1.0 - 0.0012)
                 let detuneR = f * (1.0 + 0.0012)
-                let tine = sin(Float(2.0 * .pi * (f * 4.0) * t)) * 0.18 * tineEnv
-                let mod = sin(Float(2.0 * .pi * (f * 2.0) * t)) * 0.25 * Float(exp(-t * 5.0))
+                let tine = Self.fastSinUnit(f * 4.0 * t) * 0.18 * tineEnv
+                let mod = Double(Self.fastSinUnit(f * 2.0 * t) * 0.04 * Float(exp(-t * 5.0)))
                 
-                let voiceL = sin(Float(2.0 * .pi * detuneL * t) + mod) * bodyEnv + tine
-                let voiceR = sin(Float(2.0 * .pi * detuneR * t) + mod) * bodyEnv + tine
+                let voiceL = Self.fastSinUnit(detuneL * t + mod) * bodyEnv + tine
+                let voiceR = Self.fastSinUnit(detuneR * t + mod) * bodyEnv + tine
                 
-                let pan = Float(idx) / Float(max(1, freqs.count - 1)) // 0..1 stereo spread
+                let pan = Float(idx) / Float(max(1, freqs.count - 1))
                 sumL += voiceL * (0.75 - 0.3 * pan)
                 sumR += voiceR * (0.45 + 0.3 * pan)
             }
@@ -636,8 +741,7 @@ class AudioManager: ObservableObject {
         for frame in 0..<Int(frameCount) {
             let t = Double(frame) / sampleRate
             let envelope = Float(exp(-t * 140.0))
-            let phase = 2.0 * Double.pi * frequency * t
-            let sample = sin(Float(phase)) * envelope * gain
+            let sample = fastSinUnit(frequency * t) * envelope * gain
             left[frame] = sample
             right[frame] = sample
         }
@@ -650,11 +754,10 @@ class AudioManager: ObservableObject {
         }
         
         if let buffer = isDownbeat ? metronomeAccentBuffer : metronomeRegularBuffer {
-            if metronomeNode.isPlaying {
-                metronomeNode.stop()
+            if !metronomeNode.isPlaying {
+                metronomeNode.play()
             }
             metronomeNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-            metronomeNode.play()
         }
     }
 }

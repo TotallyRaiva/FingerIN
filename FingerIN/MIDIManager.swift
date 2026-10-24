@@ -49,8 +49,19 @@ class MIDIManager: ObservableObject {
             let events = Self.parseMIDIPackets(packetList)
             guard !events.isEmpty else { return }
             let receiveTime = CACurrentMediaTime()
+            
+            // Trigger audio immediately on the real-time CoreMIDI thread if note maps cleanly without MIDI Learn
+            var preTriggeredIndices = Set<Int>()
+            for (idx, action) in events.enumerated() {
+                if case .noteOn(let rawNote, let velocity) = action,
+                   let canonical = DataManager.resolveRealtimeMIDINote(rawNote) {
+                    AudioManager.shared.triggerSoundRealtime(for: canonical, velocity: velocity)
+                    preTriggeredIndices.insert(idx)
+                }
+            }
+            
             Task { @MainActor [weak self] in
-                self?.processParsedEvents(events, timestamp: receiveTime)
+                self?.processParsedEvents(events, preTriggered: preTriggeredIndices, timestamp: receiveTime)
             }
         }
         
@@ -78,7 +89,6 @@ class MIDIManager: ObservableObject {
                 }
             }
         }
-        // Clean up disconnected sources
         connectedSourceRefs.formIntersection(currentSources)
     }
     
@@ -103,7 +113,6 @@ class MIDIManager: ObservableObject {
         case noteOff(note: UInt8)
     }
     
-    /// Safely parses all packets and multi-message byte streams (including chords & running status)
     nonisolated private static func parseMIDIPackets(_ packetList: UnsafePointer<MIDIPacketList>) -> [ParsedMIDIAction] {
         guard let packetOffset = MemoryLayout<MIDIPacketList>.offset(of: \.packet) else {
             return []
@@ -129,12 +138,10 @@ class MIDIManager: ObservableObject {
                 let byte = bytes[index]
                 
                 if byte >= 0x80 {
-                    // System Real-Time messages (0xF8..0xFF) are single-byte and don't affect running status
                     if byte >= 0xF8 {
                         index += 1
                         continue
                     }
-                    // System Common / SysEx (0xF0..0xF7)
                     if byte >= 0xF0 {
                         runningStatus = 0
                         index += 1
@@ -146,13 +153,13 @@ class MIDIManager: ObservableObject {
                 
                 let command = runningStatus & 0xF0
                 switch command {
-                case 0x80: // Note Off (2 data bytes)
+                case 0x80:
                     guard index + 1 < bytes.count else { index = bytes.count; break }
                     let note = bytes[index]
                     actions.append(.noteOff(note: note))
                     index += 2
                     
-                case 0x90: // Note On (2 data bytes)
+                case 0x90:
                     guard index + 1 < bytes.count else { index = bytes.count; break }
                     let note = bytes[index]
                     let velocity = bytes[index + 1]
@@ -163,14 +170,13 @@ class MIDIManager: ObservableObject {
                     }
                     index += 2
                     
-                case 0xA0, 0xB0, 0xE0: // Other 2-data-byte channel messages
+                case 0xA0, 0xB0, 0xE0:
                     index += 2
                     
-                case 0xC0, 0xD0: // 1-data-byte channel messages
+                case 0xC0, 0xD0:
                     index += 1
                     
                 default:
-                    // Unrecognized or data byte without running status
                     index += 1
                 }
             }
@@ -181,15 +187,17 @@ class MIDIManager: ObservableObject {
         return actions
     }
     
-    private func processParsedEvents(_ actions: [ParsedMIDIAction], timestamp: TimeInterval) {
-        for action in actions {
+    private func processParsedEvents(_ actions: [ParsedMIDIAction], preTriggered: Set<Int>, timestamp: TimeInterval) {
+        for (idx, action) in actions.enumerated() {
             switch action {
             case .noteOn(let rawNote, let velocity):
                 self.lastNote = Int(rawNote)
                 self.lastVelocity = Int(velocity)
                 
                 if let canonicalNote = DataManager.shared.resolveIncomingMIDINote(rawNote) {
-                    AudioManager.shared.triggerSound(for: canonicalNote, velocity: velocity)
+                    if !preTriggered.contains(idx) {
+                        AudioManager.shared.triggerSound(for: canonicalNote, velocity: velocity)
+                    }
                     PadStatusManager.shared.highlightPad(canonicalNote)
                     noteOnPublisher.send(
                         MIDINoteEvent(
@@ -215,7 +223,7 @@ class MIDIManager: ObservableObject {
     func simulatePadHit(canonicalNote: UInt8, velocity: UInt8 = 100) {
         self.lastNote = Int(canonicalNote)
         self.lastVelocity = Int(velocity)
-        AudioManager.shared.triggerSound(for: canonicalNote, velocity: velocity)
+        AudioManager.shared.triggerSoundRealtime(for: canonicalNote, velocity: velocity)
         PadStatusManager.shared.pulseHighlight(canonicalNote, duration: 0.12)
         noteOnPublisher.send(
             MIDINoteEvent(

@@ -30,14 +30,11 @@ final class FingerINTests: XCTestCase {
             swing: 0.24
         )
 
-        // At 120 BPM, 1 beat = 0.5s, 1 single bar (16 steps) = 2.0s
         XCTAssertEqual(result.barDuration, 2.0, accuracy: 0.0001)
         XCTAssertEqual(result.totalSteps, 16)
-        // Hats should be filtered out, leaving 2 kick notes + 2 snare notes = 4 notes
         XCTAssertEqual(result.notes.count, 4)
         XCTAssertTrue(result.notes.allSatisfy { activePads.contains($0.padIndex) })
 
-        // Verify accent (3 -> 124) and ghost note (2 -> 52) velocities and odd-step swing
         let firstKick = result.notes.first { $0.padIndex == 12 && $0.stepIndex == 0 }
         let ghostSnare = result.notes.first { $0.padIndex == 13 && $0.stepIndex == 7 }
         XCTAssertEqual(firstKick?.velocity, 124)
@@ -46,18 +43,23 @@ final class FingerINTests: XCTestCase {
         XCTAssertEqual(ghostSnare?.stepOffsetRatio ?? -1, 0.24, accuracy: 0.0001)
     }
 
-    func testTwoBarTemplatesAndKits() throws {
-        for template in LevelProvider.allTemplates where !template.isCalibration {
-            XCTAssertEqual(template.totalSteps, 32, "\(template.name) should be a 2-bar (32-step) pattern")
-            XCTAssertFalse(template.backingEvents.isEmpty, "\(template.name) should include musical backing events")
+    func testMusicStyleBeatVariationsAndLatencyModes() throws {
+        for style in MusicStyle.allCases where style != .calibration {
+            let variations = LevelProvider.variations(for: style)
+            XCTAssertEqual(variations.count, 3, "\(style.rawValue) should provide 3 distinct beat variations")
+            for variation in variations {
+                XCTAssertEqual(variation.totalSteps, 32, "\(variation.name) should be a 2-bar (32-step) pattern")
+                XCTAssertFalse(variation.backingEvents.isEmpty)
+            }
         }
+        XCTAssertGreaterThan(SampleLatencyMode.instant.trimMilliseconds, SampleLatencyMode.tight.trimMilliseconds)
+        XCTAssertEqual(SampleLatencyMode.natural.trimMilliseconds, 0.0)
     }
 
     func testScoreManagerStreakMultipliersAndAccuracy() throws {
         let scoreManager = ScoreManager.shared
         scoreManager.reset()
 
-        // 10 perfect hits: hits 1..9 at 1x (100pt), hit 10 reaches streak 10 -> 2x (200pt)
         for _ in 0..<10 {
             scoreManager.registerHit(accuracy: .perfect, timingOffsetMs: -4)
         }
@@ -66,7 +68,6 @@ final class FingerINTests: XCTestCase {
         XCTAssertEqual(scoreManager.multiplier, 2)
         XCTAssertEqual(scoreManager.score, 9 * 100 + 200)
 
-        // Miss resets current streak but preserves maxStreak
         scoreManager.registerHit(accuracy: .miss, timingOffsetMs: nil)
         XCTAssertEqual(scoreManager.streak, 0)
         XCTAssertEqual(scoreManager.maxStreak, 10)
@@ -84,7 +85,6 @@ final class FingerINTests: XCTestCase {
         XCTAssertEqual(calibration.sampleCount, 2)
         XCTAssertEqual(calibration.visualOffset, 0.025, accuracy: 0.0001)
 
-        // Outlier > 250ms should be ignored
         calibration.recordCalibrationOffset(0.450)
         XCTAssertEqual(calibration.sampleCount, 2)
         XCTAssertEqual(calibration.visualOffset, 0.025, accuracy: 0.0001)
@@ -94,11 +94,9 @@ final class FingerINTests: XCTestCase {
         let dataManager = DataManager.shared
         dataManager.resetMIDIMappingToDefault()
 
-        // Default mapping resolves 12 -> 12 and General MIDI 36 -> 12
         XCTAssertEqual(dataManager.resolveIncomingMIDINote(12), 12)
         XCTAssertEqual(dataManager.resolveIncomingMIDINote(36), 12)
 
-        // Activate MIDI Learn for Kick (canonical 12) and send note 60
         dataManager.toggleMIDILearn(forCanonicalNote: 12)
         XCTAssertEqual(dataManager.learningCanonicalNote, 12)
         let resolved = dataManager.resolveIncomingMIDINote(60)

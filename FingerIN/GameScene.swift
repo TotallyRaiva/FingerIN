@@ -576,6 +576,10 @@ class GameScene: SKScene {
         self.isDemoMode = isDemoMode
         self.isCalibrationMode = isCalibrationMode
         self.activePads = activePads
+        
+        if backingTrack && !isCalibrationMode {
+            AudioManager.shared.prewarmBacking(events: backingEvents, stepDuration: self.barDuration / 16.0)
+        }
     }
     
     /// Updates playback flags and pattern parameters live without wiping notes or resetting score
@@ -605,6 +609,8 @@ class GameScene: SKScene {
         
         if !backingTrack {
             AudioManager.shared.stopBackingAudio()
+        } else if !isCalibrationMode {
+            AudioManager.shared.prewarmBacking(events: backingEvents, stepDuration: self.barDuration / 16.0)
         }
         
         if abs(oldBarDuration - self.barDuration) > 0.0001 && oldBarDuration > 0 {

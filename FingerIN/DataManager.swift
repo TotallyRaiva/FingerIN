@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import SwiftUI
 import Combine
+import os
 
 /// Canonical definition for each of the 4 finger-drumming voices/lanes
 struct DrumVoiceConfig: Identifiable, Equatable {
@@ -107,16 +108,27 @@ final class PracticeSessionRecord {
 class DataManager: ObservableObject {
     static let shared = DataManager()
     
+    nonisolated private struct RealtimeMappingSnapshot: Sendable {
+        var customMIDIMapping: [UInt8: UInt8] = [12: 12, 13: 13, 14: 14, 15: 15]
+        var isLearning: Bool = false
+    }
+    
+    nonisolated private static let rtMappingLock = OSAllocatedUnfairLock(initialState: RealtimeMappingSnapshot())
+    
     /// Custom MIDI note mappings: maps canonicalNote (12..15) -> physical MIDI note on controller
     @Published var customMIDIMapping: [UInt8: UInt8] = [
         12: 12,
         13: 13,
         14: 14,
         15: 15
-    ]
+    ] {
+        didSet { syncRealtimeSnapshot() }
+    }
     
     /// If non-nil, the next incoming MIDI Note On will be bound to this canonical voice note (12..15)
-    @Published var learningCanonicalNote: UInt8? = nil
+    @Published var learningCanonicalNote: UInt8? = nil {
+        didSet { syncRealtimeSnapshot() }
+    }
     
     /// Recent practice sessions loaded from SwiftData
     @Published private(set) var recentSessions: [PracticeSessionRecord] = []
@@ -128,7 +140,7 @@ class DataManager: ObservableObject {
     private let mappingDefaultsKey = "FingerIN.customMIDIMapping"
     
     // Standard General MIDI fallback notes (C1=36 Kick, D1=38 Snare, F#1=42 Closed Hat, A#1=46 Open Hat)
-    private let generalMIDIFallback: [UInt8: UInt8] = [
+    nonisolated private static let generalMIDIFallback: [UInt8: UInt8] = [
         36: 12,
         38: 13,
         42: 14,
@@ -137,8 +149,28 @@ class DataManager: ObservableObject {
     
     private init() {
         loadSavedMIDIMapping()
+        syncRealtimeSnapshot()
         setupSwiftData()
         fetchSessions()
+    }
+    
+    private func syncRealtimeSnapshot() {
+        let map = customMIDIMapping
+        let learning = (learningCanonicalNote != nil)
+        Self.rtMappingLock.withLock { state in
+            state.customMIDIMapping = map
+            state.isLearning = learning
+        }
+    }
+    
+    /// Thread-safe lookup for the CoreMIDI real-time callback thread (returns nil if MIDI Learn is active)
+    nonisolated static func resolveRealtimeMIDINote(_ physicalNote: UInt8) -> UInt8? {
+        let snapshot = rtMappingLock.withLock { $0 }
+        guard !snapshot.isLearning else { return nil }
+        if let match = snapshot.customMIDIMapping.first(where: { $0.value == physicalNote }) {
+            return match.key
+        }
+        return generalMIDIFallback[physicalNote]
     }
     
     private func setupSwiftData() {
@@ -147,7 +179,6 @@ class DataManager: ObservableObject {
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
             modelContainer = try ModelContainer(for: schema, configurations: [config])
         } catch {
-            // Fallback to in-memory container if sandbox/disk path is restricted in tests
             if let fallback = try? ModelContainer(
                 for: PracticeSessionRecord.self,
                 configurations: ModelConfiguration(isStoredInMemoryOnly: true)
@@ -172,13 +203,11 @@ class DataManager: ObservableObject {
             return targetCanonical
         }
         
-        // Check user's active mapping first
         if let match = customMIDIMapping.first(where: { $0.value == physicalNote }) {
             return match.key
         }
         
-        // Also support General MIDI standard drum pad notes if not conflicting
-        if let gmCanonical = generalMIDIFallback[physicalNote] {
+        if let gmCanonical = Self.generalMIDIFallback[physicalNote] {
             return gmCanonical
         }
         

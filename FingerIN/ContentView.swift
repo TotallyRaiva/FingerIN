@@ -23,6 +23,7 @@ struct ContentView: View {
     @State private var isDemoMode: Bool = false
     @State private var isPlaying: Bool = false
     @State private var activePads: Set<UInt8> = [12, 13, 14, 15]
+    @State private var selectedStyle: MusicStyle = .boomBap
     @State private var selectedTemplate: LevelProvider.PatternTemplate = LevelProvider.boomBap
     
     // Scene instance
@@ -53,7 +54,7 @@ struct ContentView: View {
                 scene.size = CGSize(width: max(400, newSize.width - 180), height: 320)
             }
         }
-        .frame(minWidth: 1180, minHeight: 450)
+        .frame(minWidth: 1220, minHeight: 460)
         .onChange(of: currentBPM) { _, _ in applyLiveSettings() }
         .onChange(of: isLooping) { _, _ in applyLiveSettings() }
         .onChange(of: isMetronomeEnabled) { _, _ in applyLiveSettings() }
@@ -62,6 +63,7 @@ struct ContentView: View {
         .onChange(of: activePads) { _, _ in applyLiveSettings() }
         .onChange(of: selectedTemplate) { oldTemplate, newTemplate in
             saveCurrentSessionIfNeeded(patternName: oldTemplate.name)
+            selectedStyle = newTemplate.style
             currentBPM = newTemplate.bpm
             audioManager.currentKit = newTemplate.recommendedKit
             if newTemplate.isCalibration {
@@ -72,7 +74,7 @@ struct ContentView: View {
         }
     }
     
-    // MARK: - Subviews
+    // MARK: - Top Control Bar
     
     private var topControlBar: some View {
         HStack(spacing: 12) {
@@ -97,7 +99,7 @@ struct ContentView: View {
                         .lineLimit(1)
                 }
             }
-            .frame(width: 140, alignment: .leading)
+            .frame(width: 145, alignment: .leading)
             
             Divider().frame(height: 22)
             
@@ -113,19 +115,17 @@ struct ContentView: View {
             
             Divider().frame(height: 22)
             
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
+                musicBandButton
+                
                 Toggle("LOOP", isOn: $isLooping).toggleStyle(.button)
-                Toggle("MUSIC", isOn: $isBackingTrackEnabled)
-                    .toggleStyle(.button)
-                    .tint(.purple)
-                    .help("Play musical bassline & electric piano chords along with the groove")
                 Toggle("METRO", isOn: $isMetronomeEnabled).toggleStyle(.button)
                 Toggle("DEMO", isOn: $isDemoMode).toggleStyle(.button)
             }
             
             Divider().frame(height: 22)
             
-            calibrationControlSection
+            latencyAndCalibrationSection
             
             Spacer(minLength: 4)
             
@@ -137,9 +137,66 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 52)
+        .frame(height: 54)
         .background(Color.black)
         .controlSize(.small)
+    }
+    
+    /// Visually appealing pill button for the backing Bass + Rhodes Chords accompaniment
+    private var musicBandButton: some View {
+        Button(action: {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                isBackingTrackEnabled.toggle()
+            }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: isBackingTrackEnabled ? "waveform.circle.fill" : "waveform.slash")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(isBackingTrackEnabled ? .cyan : .gray)
+                    .symbolEffect(.pulse, isActive: isBackingTrackEnabled && isPlaying)
+                
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("MUSIC")
+                        .font(.system(size: 9, weight: .black, design: .rounded))
+                        .foregroundColor(isBackingTrackEnabled ? .white : .gray)
+                    Text(isBackingTrackEnabled ? "BASS + KEYS" : "MUTED")
+                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .foregroundColor(isBackingTrackEnabled ? .cyan.opacity(0.9) : .gray.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                ZStack {
+                    if isBackingTrackEnabled {
+                        LinearGradient(
+                            colors: [
+                                Color.purple.opacity(0.65),
+                                Color.indigo.opacity(0.65),
+                                Color.cyan.opacity(0.45)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    } else {
+                        Color.white.opacity(0.06)
+                    }
+                }
+            )
+            .clipShape(Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(
+                        isBackingTrackEnabled
+                            ? LinearGradient(colors: [.cyan, .purple], startPoint: .leading, endPoint: .trailing)
+                            : LinearGradient(colors: [.white.opacity(0.15), .white.opacity(0.05)], startPoint: .leading, endPoint: .trailing),
+                        lineWidth: isBackingTrackEnabled ? 1.5 : 1.0
+                    )
+            )
+            .shadow(color: isBackingTrackEnabled ? Color.purple.opacity(0.55) : .clear, radius: 6, x: 0, y: 0)
+        }
+        .buttonStyle(.plain)
+        .help("Toggle live Bassline & Fender Rhodes Chords accompaniment")
     }
     
     private var scoreStreakDisplay: some View {
@@ -229,39 +286,72 @@ struct ContentView: View {
                 .foregroundColor(.cyan)
                 .frame(width: 30, alignment: .trailing)
             Slider(value: $currentBPM, in: 60...200, step: 1)
-                .frame(width: 75)
+                .frame(width: 70)
         }
     }
     
-    private var calibrationControlSection: some View {
-        HStack(spacing: 5) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(selectedTemplate.isCalibration ? "AUTO (\(calibration.sampleCount)/10)" : "CALIB")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundColor(selectedTemplate.isCalibration ? .cyan : .gray)
-                Text(String(format: "%+.0fms", calibration.visualOffset * 1000))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.orange)
+    /// Sample Attack Latency Mode selector + Visual Offset Calibration
+    private var latencyAndCalibrationSection: some View {
+        HStack(spacing: 10) {
+            // Sample Attack Trim (eliminates pre-peak sample onset delay)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("SAMPLE LATENCY")
+                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                HStack(spacing: 3) {
+                    ForEach(SampleLatencyMode.allCases) { mode in
+                        Button(action: {
+                            audioManager.sampleLatencyMode = mode
+                            if !isPlaying {
+                                audioManager.triggerSound(for: 13, velocity: 105)
+                            }
+                        }) {
+                            Text(mode.shortLabel)
+                                .font(.system(size: 8, weight: audioManager.sampleLatencyMode == mode ? .black : .medium, design: .monospaced))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(audioManager.sampleLatencyMode == mode ? Color.green.opacity(0.28) : Color.white.opacity(0.07))
+                                .foregroundColor(audioManager.sampleLatencyMode == mode ? .green : .gray)
+                                .cornerRadius(3)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Sample transient trim: \(mode.rawValue)")
+                    }
+                }
             }
-            Slider(
-                value: Binding(
-                    get: { calibration.visualOffset },
-                    set: { calibration.saveOffset($0) }
-                ),
-                in: -0.2...0.2
-            )
-            .frame(width: 68)
             
-            Button("0ms") {
-                calibration.clearHistory()
-                calibration.saveOffset(0.0)
+            // Visual Hit-Line Offset Calibration
+            HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(selectedTemplate.isCalibration ? "AUTO (\(calibration.sampleCount)/10)" : "SYNC")
+                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .foregroundColor(selectedTemplate.isCalibration ? .cyan : .gray)
+                    Text(String(format: "%+.0fms", calibration.visualOffset * 1000))
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.orange)
+                }
+                Slider(
+                    value: Binding(
+                        get: { calibration.visualOffset },
+                        set: { calibration.saveOffset($0) }
+                    ),
+                    in: -0.2...0.2
+                )
+                .frame(width: 58)
+                
+                Button("0") {
+                    calibration.clearHistory()
+                    calibration.saveOffset(0.0)
+                }
+                .font(.system(size: 8, design: .monospaced))
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .help("Reset visual latency offset to 0ms")
             }
-            .font(.system(size: 8, design: .monospaced))
-            .buttonStyle(.bordered)
-            .controlSize(.mini)
-            .help("Reset visual latency calibration to 0ms")
         }
     }
+    
+    // MARK: - Game Area
     
     private func gameArea(totalSize: CGSize) -> some View {
         HStack(alignment: .bottom, spacing: 0) {
@@ -278,17 +368,19 @@ struct ContentView: View {
         .background(Color.black)
     }
     
+    // MARK: - Bottom Control Bar (Instruments, Drum Kits, Styles & Beat Variations)
+    
     private var bottomControlBar: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 14) {
             instrumentToggles
             
-            Divider().frame(height: 40)
+            Divider().frame(height: 44)
             
             kitSelection
             
-            Divider().frame(height: 40)
+            Divider().frame(height: 44)
             
-            levelSelection
+            styleAndVariationSelection
             
             Spacer(minLength: 4)
             
@@ -307,12 +399,12 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 80)
+        .frame(height: 86)
         .background(Color(white: 0.05))
     }
     
     private var instrumentToggles: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             ForEach(DrumVoiceConfig.allVoices) { voice in
                 InstrumentToggle(
                     name: voice.shortName,
@@ -325,15 +417,14 @@ struct ContentView: View {
     }
     
     private var kitSelection: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             Text("DRUM KIT")
                 .font(.system(size: 8, weight: .bold, design: .monospaced))
                 .foregroundColor(.gray)
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 ForEach(DrumKit.allCases) { kit in
                     Button(action: {
                         audioManager.currentKit = kit
-                        // Audition snare softly when switching kits so user feels the kit change immediately
                         if !isPlaying {
                             audioManager.triggerSound(for: 13, velocity: 95)
                         }
@@ -341,7 +432,7 @@ struct ContentView: View {
                         Text(kit.displayName)
                             .font(.system(size: 9, weight: audioManager.currentKit == kit ? .bold : .medium, design: .monospaced))
                             .padding(.horizontal, 6)
-                            .padding(.vertical, 4)
+                            .padding(.vertical, 5)
                             .background(audioManager.currentKit == kit ? Color.orange.opacity(0.28) : Color.white.opacity(0.07))
                             .foregroundColor(audioManager.currentKit == kit ? .orange : .gray)
                             .cornerRadius(4)
@@ -352,21 +443,67 @@ struct ContentView: View {
         }
     }
     
-    private var levelSelection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("GROOVE / VARIATION (2 BARS)")
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundColor(.gray)
-            HStack(spacing: 6) {
-                ForEach(LevelProvider.allTemplates) { template in
-                    Button(action: { selectedTemplate = template }) {
-                        Text(template.name)
-                            .font(.system(size: 10, weight: selectedTemplate == template ? .bold : .medium))
+    private var styleAndVariationSelection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Row 1: Music Style tabs
+            HStack(spacing: 5) {
+                Text("STYLE:")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                    .frame(width: 44, alignment: .leading)
+                
+                ForEach(MusicStyle.allCases) { style in
+                    Button(action: {
+                        selectedStyle = style
+                        if let firstVar = LevelProvider.variations(for: style).first {
+                            selectedTemplate = firstVar
+                        }
+                    }) {
+                        Text(style.rawValue)
+                            .font(.system(size: 9, weight: selectedStyle == style ? .bold : .medium))
                             .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(selectedTemplate == template ? Color.cyan.opacity(0.25) : Color.white.opacity(0.08))
-                            .foregroundColor(selectedTemplate == template ? .cyan : .white)
-                            .cornerRadius(5)
+                            .padding(.vertical, 3)
+                            .background(selectedStyle == style ? Color.cyan.opacity(0.26) : Color.white.opacity(0.07))
+                            .foregroundColor(selectedStyle == style ? .cyan : .white.opacity(0.8))
+                            .cornerRadius(4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            
+            // Row 2: Beat Variations within the selected Music Style
+            HStack(spacing: 6) {
+                Text("BEAT:")
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .foregroundColor(.gray)
+                    .frame(width: 44, alignment: .leading)
+                
+                let variations = LevelProvider.variations(for: selectedStyle)
+                ForEach(variations) { variation in
+                    let isSelected = (selectedTemplate == variation)
+                    Button(action: {
+                        selectedTemplate = variation
+                    }) {
+                        HStack(spacing: 4) {
+                            Text(variation.variationName)
+                                .font(.system(size: 9, weight: isSelected ? .bold : .medium, design: .monospaced))
+                            Text("\(Int(variation.bpm))")
+                                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                                .foregroundColor(isSelected ? .mint : .gray)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            isSelected
+                                ? LinearGradient(colors: [Color.mint.opacity(0.32), Color.cyan.opacity(0.22)], startPoint: .leading, endPoint: .trailing)
+                                : LinearGradient(colors: [Color.white.opacity(0.06), Color.white.opacity(0.06)], startPoint: .leading, endPoint: .trailing)
+                        )
+                        .foregroundColor(isSelected ? .mint : .gray)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(isSelected ? Color.mint.opacity(0.6) : Color.clear, lineWidth: 1)
+                        )
+                        .cornerRadius(4)
                     }
                     .buttonStyle(.plain)
                 }
@@ -462,7 +599,7 @@ struct InstrumentToggle: View {
                 
                 RoundedRectangle(cornerRadius: 4)
                     .fill(activePads.contains(note) ? color : Color.gray.opacity(0.2))
-                    .frame(width: 38, height: 38)
+                    .frame(width: 36, height: 36)
                     .overlay(
                         RoundedRectangle(cornerRadius: 4)
                             .stroke(Color.white.opacity(isHighlighted ? 0.85 : 0), lineWidth: 2)
