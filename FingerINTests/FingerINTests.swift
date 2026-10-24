@@ -18,7 +18,7 @@ final class FingerINTests: XCTestCase {
         DataManager.shared.resetMIDIMappingToDefault()
     }
 
-    func testPatternBuilderFilteringAndVelocities() throws {
+    func testPatternBuilderFilteringVelocitiesAndSwing() throws {
         let activePads: Set<UInt8> = [12, 13] // Only Kick and Snare
         let result = PatternBuilder.build(
             bpm: 120,
@@ -26,20 +26,31 @@ final class FingerINTests: XCTestCase {
             kick:  [3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             snare: [0, 0, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
             hatC:  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            hatO:  [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]
+            hatO:  [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+            swing: 0.24
         )
 
-        // At 120 BPM, 1 beat = 0.5s, 1 bar (16 steps) = 2.0s
+        // At 120 BPM, 1 beat = 0.5s, 1 single bar (16 steps) = 2.0s
         XCTAssertEqual(result.barDuration, 2.0, accuracy: 0.0001)
+        XCTAssertEqual(result.totalSteps, 16)
         // Hats should be filtered out, leaving 2 kick notes + 2 snare notes = 4 notes
         XCTAssertEqual(result.notes.count, 4)
         XCTAssertTrue(result.notes.allSatisfy { activePads.contains($0.padIndex) })
 
-        // Verify accent (3 -> 122) and ghost note (2 -> 55) velocities
+        // Verify accent (3 -> 124) and ghost note (2 -> 52) velocities and odd-step swing
         let firstKick = result.notes.first { $0.padIndex == 12 && $0.stepIndex == 0 }
         let ghostSnare = result.notes.first { $0.padIndex == 13 && $0.stepIndex == 7 }
-        XCTAssertEqual(firstKick?.velocity, 122)
-        XCTAssertEqual(ghostSnare?.velocity, 55)
+        XCTAssertEqual(firstKick?.velocity, 124)
+        XCTAssertEqual(firstKick?.stepOffsetRatio ?? -1, 0.0, accuracy: 0.0001)
+        XCTAssertEqual(ghostSnare?.velocity, 52)
+        XCTAssertEqual(ghostSnare?.stepOffsetRatio ?? -1, 0.24, accuracy: 0.0001)
+    }
+
+    func testTwoBarTemplatesAndKits() throws {
+        for template in LevelProvider.allTemplates where !template.isCalibration {
+            XCTAssertEqual(template.totalSteps, 32, "\(template.name) should be a 2-bar (32-step) pattern")
+            XCTAssertFalse(template.backingEvents.isEmpty, "\(template.name) should include musical backing events")
+        }
     }
 
     func testScoreManagerStreakMultipliersAndAccuracy() throws {

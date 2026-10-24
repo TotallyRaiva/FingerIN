@@ -25,15 +25,16 @@ final class NoteNode: SKShapeNode {
         self.travelDuration = travelDuration
         super.init()
         
+        let cornerRadius: CGFloat = velocity < 70 ? 8 : 6
         let rect = CGRect(origin: CGPoint(x: -size.width / 2, y: -size.height / 2), size: size)
-        self.path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
+        self.path = CGPath(roundedRect: rect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
         
-        // Scale opacity/height slightly by velocity (ghost notes vs normal vs accents)
-        let alpha: CGFloat = velocity < 75 ? 0.6 : (velocity > 110 ? 1.0 : 0.88)
+        // Visual distinction between Ghost notes (<70), Normal notes (70..110), and Accents (>110)
+        let alpha: CGFloat = velocity < 70 ? 0.50 : (velocity > 110 ? 0.98 : 0.84)
         self.fillColor = color.withAlphaComponent(alpha)
-        self.strokeColor = velocity > 110 ? .white : color
-        self.lineWidth = velocity > 110 ? 2.0 : 1.0
-        self.glowWidth = velocity > 110 ? 4.0 : 1.0
+        self.strokeColor = velocity > 110 ? .white : color.withAlphaComponent(0.9)
+        self.lineWidth = velocity > 110 ? 2.2 : 1.0
+        self.glowWidth = velocity > 110 ? 4.5 : (velocity < 70 ? 0.0 : 1.5)
         self.zPosition = 5
         self.name = "note"
     }
@@ -49,7 +50,13 @@ final class GridLineNode: SKShapeNode {
     let travelDuration: TimeInterval
     let isBarLine: Bool
     
-    init(targetHitSongTime: TimeInterval, travelDuration: TimeInterval, totalHeight: CGFloat, isBarLine: Bool) {
+    init(
+        targetHitSongTime: TimeInterval,
+        travelDuration: TimeInterval,
+        totalHeight: CGFloat,
+        isBarLine: Bool,
+        barNumber: Int? = nil
+    ) {
         self.targetHitSongTime = targetHitSongTime
         self.travelDuration = travelDuration
         self.isBarLine = isBarLine
@@ -58,10 +65,20 @@ final class GridLineNode: SKShapeNode {
         let width: CGFloat = isBarLine ? 2.0 : 1.0
         let rect = CGRect(x: -width / 2, y: 0, width: width, height: totalHeight)
         self.path = CGPath(rect: rect, transform: nil)
-        self.fillColor = NSColor.white.withAlphaComponent(isBarLine ? 0.22 : 0.07)
+        self.fillColor = NSColor.white.withAlphaComponent(isBarLine ? 0.24 : 0.07)
         self.strokeColor = .clear
         self.zPosition = 0
         self.name = "gridLine"
+        
+        if let barNum = barNumber, isBarLine {
+            let tag = SKLabelNode(text: "BAR \(barNum)")
+            tag.fontName = "Menlo-Bold"
+            tag.fontSize = 9
+            tag.fontColor = NSColor.white.withAlphaComponent(0.35)
+            tag.horizontalAlignmentMode = .left
+            tag.position = CGPoint(x: 6, y: totalHeight - 14)
+            addChild(tag)
+        }
     }
     
     required init?(coder aDecoder: NSCoder) {
@@ -80,8 +97,8 @@ class GameScene: SKScene {
     private let midiNotes: [UInt8] = [12, 13, 14, 15]
     
     // Timing Windows (seconds)
-    private let perfectWindow: TimeInterval = 0.045
-    private let goodWindow: TimeInterval = 0.135
+    private let perfectWindow: TimeInterval = 0.048
+    private let goodWindow: TimeInterval = 0.140
     private let maxEarlyCandidateWindow: TimeInterval = 0.25
     
     // Playback & Scheduler State
@@ -90,14 +107,18 @@ class GameScene: SKScene {
     private(set) var songTime: TimeInterval = 0
     
     private var patternNotes: [TrackNote] = []
+    private var backingEvents: [BackingStepEvent] = []
+    private var totalPatternSteps: Int = 32
     private var barDuration: TimeInterval = 2.0
     private var isLooping: Bool = true
     private var isMetronomeEnabled: Bool = false
+    private var isBackingTrackEnabled: Bool = true
     private var isDemoMode: Bool = false
     private var isCalibrationMode: Bool = false
     private var activePads: Set<UInt8> = [12, 13, 14, 15]
     
     private var lastSpawnedStepIndex: Int = -1
+    private var lastHitStepIndex: Int = -1
     private var lastMetronomeBeatIndex: Int = -1
     
     // Tracked Scene Nodes
@@ -181,7 +202,7 @@ class GameScene: SKScene {
         max(size.width + 40, hitLineX + 400)
     }
     
-    /// Visual travel duration equals 1 bar (4 beats) so the metronome count-in and bar lines are 100% phase-aligned at every BPM
+    /// Visual travel duration equals 1 bar (4 beats = 16 steps) so the metronome count-in and bar lines are 100% phase-aligned at every BPM
     private var currentTravelDuration: TimeInterval {
         max(0.8, barDuration)
     }
@@ -215,11 +236,11 @@ class GameScene: SKScene {
             }
         }
         
-        // 2. Spawn notes and beat grid lines per 16th-note step
+        // 2. Spawn notes and beat grid lines per 16th-note step (16 steps = 1 bar ahead of hit line)
         let currentStepIndex = Int(floor(songTime / stepDuration))
         if currentStepIndex > lastSpawnedStepIndex {
             for step in (lastSpawnedStepIndex + 1)...currentStepIndex {
-                if !isLooping && step >= 16 {
+                if !isLooping && step >= totalPatternSteps {
                     break
                 }
                 spawnStepContent(globalStep: step, stepDuration: stepDuration)
@@ -227,7 +248,24 @@ class GameScene: SKScene {
             lastSpawnedStepIndex = currentStepIndex
         }
         
-        // 3. Update positions of all active grid lines
+        // 3. Trigger musical accompaniment (Bass + Rhodes Chords) as steps cross hitLineX (after 16-step travel)
+        let currentHitStep = currentStepIndex - 16
+        if currentHitStep >= 0 && currentHitStep > lastHitStepIndex {
+            for hitStep in max(0, lastHitStepIndex + 1)...currentHitStep {
+                if !isLooping && hitStep >= totalPatternSteps {
+                    break
+                }
+                if isBackingTrackEnabled && !isCalibrationMode {
+                    let localStep = hitStep % max(16, totalPatternSteps)
+                    for event in backingEvents where event.stepIndex == localStep {
+                        AudioManager.shared.playBackingEvent(event, stepDuration: stepDuration)
+                    }
+                }
+            }
+            lastHitStepIndex = currentHitStep
+        }
+        
+        // 4. Update positions of all active grid lines
         let distanceToHitLine = spawnX - hitLineX
         for i in stride(from: activeGridLines.count - 1, through: 0, by: -1) {
             let gridNode = activeGridLines[i]
@@ -241,7 +279,7 @@ class GameScene: SKScene {
             }
         }
         
-        // 4. Update positions and handle Demo triggers / Miss expirations for active notes
+        // 5. Update positions and handle Demo triggers / Miss expirations for active notes
         let visualOffset = CalibrationManager.shared.visualOffset
         for i in stride(from: activeNoteNodes.count - 1, through: 0, by: -1) {
             let noteNode = activeNoteNodes[i]
@@ -249,7 +287,7 @@ class GameScene: SKScene {
             let progress = timeRemaining / noteNode.travelDuration
             noteNode.position.x = hitLineX + CGFloat(progress) * distanceToHitLine
             
-            // Demo Mode: automatically trigger sound & pad highlight when note crosses hit line
+            // Demo Mode: automatically trigger sound & pad highlight at exact swung timestamp
             if isDemoMode && !noteNode.hasPlayedDemoAudio && timeRemaining <= 0 {
                 noteNode.hasPlayedDemoAudio = true
                 noteNode.isJudged = true
@@ -279,34 +317,38 @@ class GameScene: SKScene {
         }
         
         // Stop automatically if non-looping pattern has finished and all notes have cleared
-        if !isLooping && currentStepIndex >= 16 && activeNoteNodes.isEmpty {
+        if !isLooping && currentStepIndex >= totalPatternSteps && activeNoteNodes.isEmpty {
             setPaused(true)
         }
     }
     
     private func spawnStepContent(globalStep: Int, stepDuration: TimeInterval) {
-        let stepSpawnSongTime = Double(globalStep) * stepDuration
         let travel = currentTravelDuration
-        let targetHitSongTime = stepSpawnSongTime + travel
         let totalHeight = laneHeight * CGFloat(totalLanes)
+        let patternSteps = max(16, totalPatternSteps)
+        let localStep = globalStep % patternSteps
         
         // Spawn vertical beat/bar grid line every 4 sixteenth-notes (1 beat)
         if globalStep % 4 == 0 {
             let isBarLine = (globalStep % 16) == 0
+            let barNum = isBarLine ? ((localStep / 16) + 1) : nil
+            let gridTargetTime = (Double(globalStep) * stepDuration) + travel
             let gridLine = GridLineNode(
-                targetHitSongTime: targetHitSongTime,
+                targetHitSongTime: gridTargetTime,
                 travelDuration: travel,
                 totalHeight: totalHeight,
-                isBarLine: isBarLine
+                isBarLine: isBarLine,
+                barNumber: barNum
             )
             gridLine.position = CGPoint(x: spawnX, y: 0)
             worldNode.addChild(gridLine)
             activeGridLines.append(gridLine)
         }
         
-        // Spawn any active pattern notes matching this step (0..<16)
-        let localStep = globalStep % 16
+        // Spawn any active pattern notes matching this step (including swing offset)
         for trackNote in patternNotes where trackNote.stepIndex == localStep && activePads.contains(trackNote.padIndex) {
+            let swungSpawnSongTime = (Double(globalStep) + trackNote.stepOffsetRatio) * stepDuration
+            let targetHitSongTime = swungSpawnSongTime + travel
             spawnNoteNode(
                 padIndex: trackNote.padIndex,
                 velocity: trackNote.velocity,
@@ -325,14 +367,15 @@ class GameScene: SKScene {
         guard let laneIndex = midiNotes.firstIndex(of: padIndex) else { return }
         let laneY = (CGFloat(laneIndex) * laneHeight) + (laneHeight / 2)
         
-        let noteHeight = velocity < 75 ? (laneHeight - 32) : (laneHeight - 18)
+        let noteWidth: CGFloat = velocity < 70 ? 28 : 38
+        let noteHeight: CGFloat = velocity < 70 ? (laneHeight - 36) : (velocity > 110 ? (laneHeight - 14) : (laneHeight - 20))
         let nsColor = NSColor(voiceColor(for: padIndex))
         let noteNode = NoteNode(
             padIndex: padIndex,
             velocity: velocity,
             targetHitSongTime: targetHitSongTime,
             travelDuration: travelDuration,
-            size: CGSize(width: 38, height: noteHeight),
+            size: CGSize(width: noteWidth, height: noteHeight),
             color: nsColor
         )
         noteNode.position = CGPoint(x: spawnX, y: laneY)
@@ -400,7 +443,6 @@ class GameScene: SKScene {
             closestNote.removeFromParent()
             ScoreManager.shared.registerHit(accuracy: accuracy, timingOffsetMs: offsetMs)
         } else {
-            // Early bad hit within candidate window
             closestNote.fillColor = NSColor.systemRed.withAlphaComponent(0.35)
             showFeedback(accuracy: .miss, offsetMs: offsetMs, at: closestNote.position)
             ScoreManager.shared.registerHit(accuracy: .miss, timingOffsetMs: offsetMs)
@@ -514,8 +556,11 @@ class GameScene: SKScene {
     func loadLevel(
         notes: [TrackNote],
         barDuration: TimeInterval,
+        totalSteps: Int = 32,
+        backingEvents: [BackingStepEvent] = [],
         loop: Bool = true,
         metronome: Bool = false,
+        backingTrack: Bool = true,
         isDemoMode: Bool = false,
         isCalibrationMode: Bool = false,
         activePads: Set<UInt8> = [12, 13, 14, 15]
@@ -523,8 +568,11 @@ class GameScene: SKScene {
         stopAndClear(resetScore: true)
         self.patternNotes = notes
         self.barDuration = max(0.5, barDuration)
+        self.totalPatternSteps = max(16, totalSteps)
+        self.backingEvents = backingEvents
         self.isLooping = loop
         self.isMetronomeEnabled = metronome
+        self.isBackingTrackEnabled = backingTrack
         self.isDemoMode = isDemoMode
         self.isCalibrationMode = isCalibrationMode
         self.activePads = activePads
@@ -534,8 +582,11 @@ class GameScene: SKScene {
     func updateLiveConfiguration(
         notes: [TrackNote],
         barDuration: TimeInterval,
+        totalSteps: Int = 32,
+        backingEvents: [BackingStepEvent] = [],
         loop: Bool,
         metronome: Bool,
+        backingTrack: Bool,
         isDemoMode: Bool,
         isCalibrationMode: Bool,
         activePads: Set<UInt8>
@@ -543,20 +594,22 @@ class GameScene: SKScene {
         let oldBarDuration = self.barDuration
         self.patternNotes = notes
         self.barDuration = max(0.5, barDuration)
+        self.totalPatternSteps = max(16, totalSteps)
+        self.backingEvents = backingEvents
         self.isLooping = loop
         self.isMetronomeEnabled = metronome
+        self.isBackingTrackEnabled = backingTrack
         self.isDemoMode = isDemoMode
         self.isCalibrationMode = isCalibrationMode
         self.activePads = activePads
         
-        // Rescale songTime proportionally if BPM changed mid-playback so active notes stay smooth
+        if !backingTrack {
+            AudioManager.shared.stopBackingAudio()
+        }
+        
         if abs(oldBarDuration - self.barDuration) > 0.0001 && oldBarDuration > 0 {
             let ratio = self.barDuration / oldBarDuration
             songTime *= ratio
-            for note in activeNoteNodes {
-                // Keep remaining visual progress smooth
-                _ = note
-            }
         }
     }
     
@@ -565,6 +618,7 @@ class GameScene: SKScene {
         self.isPaused = paused
         if paused {
             lastUpdateRealTime = nil
+            AudioManager.shared.stopBackingAudio()
         }
     }
     
@@ -572,6 +626,7 @@ class GameScene: SKScene {
         self.removeAllActions()
         worldNode.removeAllActions()
         worldNode.position = .zero
+        AudioManager.shared.stopBackingAudio()
         
         activeNoteNodes.forEach { $0.removeFromParent() }
         activeNoteNodes.removeAll()
@@ -582,6 +637,7 @@ class GameScene: SKScene {
         songTime = 0
         lastUpdateRealTime = nil
         lastSpawnedStepIndex = -1
+        lastHitStepIndex = -1
         lastMetronomeBeatIndex = -1
         
         if resetScore {
