@@ -2,42 +2,50 @@ import Foundation
 import SwiftUI
 import Combine
 
+@MainActor
 class CalibrationManager: ObservableObject {
     static let shared = CalibrationManager()
     
-    // Offset in seconds. 
-    // Positive means notes appear to be hitting late (user is hitting after the line).
-    // Negative means notes appear to be hitting early.
+    // Offset in seconds.
+    // Positive means notes are hit late (after the hit line).
+    // Negative means notes are hit early (before the hit line).
     @Published var visualOffset: TimeInterval = 0.0
+    @Published private(set) var sampleCount: Int = 0
     
-    // Store multiple hit offsets to calculate average during calibration routine
+    // Store multiple hit offsets to calculate a rolling average during calibration routine
     private var hitOffsets: [TimeInterval] = []
+    private let defaultsKey = "visualOffset"
     
     private init() {
-        // Load saved calibration from UserDefaults if needed
-        self.visualOffset = UserDefaults.standard.double(forKey: "visualOffset")
+        self.visualOffset = UserDefaults.standard.double(forKey: defaultsKey)
     }
     
     func saveOffset(_ offset: TimeInterval) {
-        self.visualOffset = offset
-        UserDefaults.standard.set(offset, forKey: "visualOffset")
+        let clamped = max(-0.2, min(0.2, offset))
+        self.visualOffset = clamped
+        UserDefaults.standard.set(clamped, forKey: defaultsKey)
     }
     
     func recordCalibrationHit(targetTime: TimeInterval, actualTime: TimeInterval) {
-        let offset = actualTime - targetTime
-        hitOffsets.append(offset)
+        recordCalibrationOffset(actualTime - targetTime)
+    }
+    
+    func recordCalibrationOffset(_ offset: TimeInterval) {
+        // Ignore extreme outliers (> 250ms) when auto-calibrating
+        guard abs(offset) <= 0.25 else { return }
         
-        // Keep only last 10 hits for average
+        hitOffsets.append(offset)
         if hitOffsets.count > 10 {
             hitOffsets.removeFirst()
         }
+        sampleCount = hitOffsets.count
         
-        // Update recommended offset based on average
         let average = hitOffsets.reduce(0, +) / Double(hitOffsets.count)
-        self.visualOffset = average
+        saveOffset(average)
     }
     
     func clearHistory() {
         hitOffsets.removeAll()
+        sampleCount = 0
     }
 }

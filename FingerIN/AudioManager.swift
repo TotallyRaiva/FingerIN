@@ -3,6 +3,7 @@ import AVFoundation
 import SwiftUI
 import Combine
 
+@MainActor
 class AudioManager: ObservableObject {
     static let shared = AudioManager()
     
@@ -14,11 +15,18 @@ class AudioManager: ObservableObject {
     private let poolSize = 16
     private var currentPlayerIndex = 0
     
+    // Dedicated metronome player node and synthesized buffers
+    private let metronomeNode = AVAudioPlayerNode()
+    private var metronomeAccentBuffer: AVAudioPCMBuffer?
+    private var metronomeRegularBuffer: AVAudioPCMBuffer?
+    
+    // Track active Open Hi-Hat node for realistic Hi-Hat choke when Closed Hi-Hat is struck
+    private weak var activeOpenHatNode: AVAudioPlayerNode?
+    
     // Cache for pre-loaded audio buffers
     private var sampleBuffers: [UInt8: AVAudioPCMBuffer] = [:]
     
-    // Mapping of MIDI Note Numbers to Sample File Names
-    // Updated to match user controller layout (12, 13, 14, 15)
+    // Mapping of canonical MIDI Note Numbers to Sample File Names
     private let noteToSampleMap: [UInt8: String] = [
         12: "kick",
         13: "Snare",
@@ -29,20 +37,26 @@ class AudioManager: ObservableObject {
     private init() {
         setupEngine()
         loadSamples()
+        buildMetronomeBuffers()
     }
     
     private func setupEngine() {
-        print("AudioManager: Setting up AVAudioEngine...")
         engine.attach(mixer)
-        engine.connect(mixer, to: engine.outputNode, format: engine.mainMixerNode.outputFormat(forBus: 0))
+        let outputFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        engine.connect(mixer, to: engine.outputNode, format: outputFormat)
         
-        // Initialize player node pool
+        // Initialize drum player node pool
         for _ in 0..<poolSize {
             let playerNode = AVAudioPlayerNode()
             engine.attach(playerNode)
-            // Connect with a generic format or mixer's input format
             engine.connect(playerNode, to: mixer, format: nil)
             playerNodes.append(playerNode)
+        }
+        
+        // Attach dedicated metronome node
+        if let metroFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2) {
+            engine.attach(metronomeNode)
+            engine.connect(metronomeNode, to: mixer, format: metroFormat)
         }
         
         startEngine()
@@ -52,7 +66,6 @@ class AudioManager: ObservableObject {
         do {
             if !engine.isRunning {
                 try engine.start()
-                print("AudioManager: AVAudioEngine started successfully.")
             }
         } catch {
             print("AudioManager: Could not start AVAudioEngine: \(error)")
@@ -60,7 +73,6 @@ class AudioManager: ObservableObject {
     }
     
     private func loadSamples() {
-        print("AudioManager: Loading samples...")
         for (note, sampleName) in noteToSampleMap {
             guard let url = Bundle.main.url(forResource: sampleName, withExtension: "wav") else {
                 print("AudioManager: [ERROR] Could not find file \(sampleName).wav in Bundle.main")
@@ -73,49 +85,97 @@ class AudioManager: ObservableObject {
                 let frameCount = UInt32(file.length)
                 
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-                    print("AudioManager: [ERROR] Could not create buffer for \(sampleName)")
                     continue
                 }
                 
                 try file.read(into: buffer)
                 sampleBuffers[note] = buffer
-                print("AudioManager: [SUCCESS] Loaded \(sampleName).wav for MIDI Note \(note)")
             } catch {
                 print("AudioManager: [ERROR] Loading \(sampleName): \(error)")
             }
         }
-        
-        if sampleBuffers.isEmpty {
-            print("AudioManager: [WARNING] No samples were loaded. Check file names and bundle inclusion.")
-        }
     }
     
-    func triggerSound(for noteNumber: UInt8) {
-        print("AudioManager: Triggering sound for MIDI Note: \(noteNumber)")
+    /// Synthesizes crisp woodblock/click buffers for accented (Beat 1) and regular beats
+    private func buildMetronomeBuffers() {
+        metronomeAccentBuffer = Self.makeClickBuffer(frequency: 1320.0, duration: 0.032, gain: 0.55)
+        metronomeRegularBuffer = Self.makeClickBuffer(frequency: 880.0, duration: 0.026, gain: 0.38)
+    }
+    
+    private static func makeClickBuffer(frequency: Double, duration: Double, gain: Float) -> AVAudioPCMBuffer? {
+        let sampleRate = 44_100.0
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2) else {
+            return nil
+        }
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+              let channelData = buffer.floatChannelData else {
+            return nil
+        }
+        buffer.frameLength = frameCount
         
-        // Ensure engine is running (it can stop if audio hardware changes)
+        let left = channelData[0]
+        let right = channelData[1]
+        
+        for frame in 0..<Int(frameCount) {
+            let t = Double(frame) / sampleRate
+            // Fast exponential decay with a brief pitch drop for a natural woodblock transient
+            let envelope = Float(exp(-t * 140.0))
+            let phase = 2.0 * Double.pi * frequency * t
+            let sample = sin(Float(phase)) * envelope * gain
+            left[frame] = sample
+            right[frame] = sample
+        }
+        return buffer
+    }
+    
+    func triggerSound(for noteNumber: UInt8, velocity: UInt8 = 100) {
         if !engine.isRunning {
-            print("AudioManager: Engine not running, attempting to restart...")
             startEngine()
         }
-
+        
         guard let buffer = sampleBuffers[noteNumber] else {
-            print("AudioManager: [IDLE] No sample mapped for note \(noteNumber). Current map: \(noteToSampleMap)")
             return
         }
         
-        // Get the next available player node from the pool
+        // Hi-Hat Choke Group: Closed Hi-Hat (14) chokes ringing Open Hi-Hat (15)
+        if noteNumber == 14, let openHat = activeOpenHatNode, openHat.isPlaying {
+            openHat.stop()
+            activeOpenHatNode = nil
+        }
+        
         let playerNode = playerNodes[currentPlayerIndex]
         currentPlayerIndex = (currentPlayerIndex + 1) % poolSize
         
-        // Schedule and play with zero latency
-        playerNode.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+        if playerNode.isPlaying {
+            playerNode.stop()
+        }
+        
+        let clampedVelocity = max(1, min(127, Int(velocity)))
+        playerNode.volume = max(0.15, Float(clampedVelocity) / 127.0)
+        
+        if noteNumber == 15 {
+            activeOpenHatNode = playerNode
+        }
+        
+        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
         playerNode.play()
-        print("AudioManager: [PLAY] Scheduled buffer for note \(noteNumber)")
     }
     
-    func playMetronomeClick() {
-        // Reuse HH Closed (14) for metronome click for now
-        triggerSound(for: 14)
+    func playMetronomeClick(isDownbeat: Bool = false) {
+        if !engine.isRunning {
+            startEngine()
+        }
+        
+        if let buffer = isDownbeat ? metronomeAccentBuffer : metronomeRegularBuffer {
+            if metronomeNode.isPlaying {
+                metronomeNode.stop()
+            }
+            metronomeNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+            metronomeNode.play()
+        } else {
+            // Fallback if buffer creation failed
+            triggerSound(for: 14, velocity: isDownbeat ? 110 : 70)
+        }
     }
 }

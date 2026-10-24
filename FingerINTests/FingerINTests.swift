@@ -8,29 +8,92 @@
 import XCTest
 @testable import FingerIN
 
+@MainActor
 final class FingerINTests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+        ScoreManager.shared.reset()
+        CalibrationManager.shared.clearHistory()
+        CalibrationManager.shared.saveOffset(0.0)
+        DataManager.shared.resetMIDIMappingToDefault()
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    func testPatternBuilderFilteringAndVelocities() throws {
+        let activePads: Set<UInt8> = [12, 13] // Only Kick and Snare
+        let result = PatternBuilder.build(
+            bpm: 120,
+            activePads: activePads,
+            kick:  [3, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            snare: [0, 0, 0, 0, 3, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+            hatC:  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            hatO:  [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1]
+        )
+
+        // At 120 BPM, 1 beat = 0.5s, 1 bar (16 steps) = 2.0s
+        XCTAssertEqual(result.barDuration, 2.0, accuracy: 0.0001)
+        // Hats should be filtered out, leaving 2 kick notes + 2 snare notes = 4 notes
+        XCTAssertEqual(result.notes.count, 4)
+        XCTAssertTrue(result.notes.allSatisfy { activePads.contains($0.padIndex) })
+
+        // Verify accent (3 -> 122) and ghost note (2 -> 55) velocities
+        let firstKick = result.notes.first { $0.padIndex == 12 && $0.stepIndex == 0 }
+        let ghostSnare = result.notes.first { $0.padIndex == 13 && $0.stepIndex == 7 }
+        XCTAssertEqual(firstKick?.velocity, 122)
+        XCTAssertEqual(ghostSnare?.velocity, 55)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-    }
+    func testScoreManagerStreakMultipliersAndAccuracy() throws {
+        let scoreManager = ScoreManager.shared
+        scoreManager.reset()
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
+        // 10 perfect hits: hits 1..9 at 1x (100pt), hit 10 reaches streak 10 -> 2x (200pt)
+        for _ in 0..<10 {
+            scoreManager.registerHit(accuracy: .perfect, timingOffsetMs: -4)
         }
+        XCTAssertEqual(scoreManager.streak, 10)
+        XCTAssertEqual(scoreManager.maxStreak, 10)
+        XCTAssertEqual(scoreManager.multiplier, 2)
+        XCTAssertEqual(scoreManager.score, 9 * 100 + 200)
+
+        // Miss resets current streak but preserves maxStreak
+        scoreManager.registerHit(accuracy: .miss, timingOffsetMs: nil)
+        XCTAssertEqual(scoreManager.streak, 0)
+        XCTAssertEqual(scoreManager.maxStreak, 10)
+        XCTAssertEqual(scoreManager.perfectCount, 10)
+        XCTAssertEqual(scoreManager.missCount, 1)
     }
 
+    func testCalibrationRollingAverageAndOutlierRejection() throws {
+        let calibration = CalibrationManager.shared
+        calibration.clearHistory()
+        calibration.saveOffset(0.0)
+
+        calibration.recordCalibrationOffset(0.020)
+        calibration.recordCalibrationOffset(0.030)
+        XCTAssertEqual(calibration.sampleCount, 2)
+        XCTAssertEqual(calibration.visualOffset, 0.025, accuracy: 0.0001)
+
+        // Outlier > 250ms should be ignored
+        calibration.recordCalibrationOffset(0.450)
+        XCTAssertEqual(calibration.sampleCount, 2)
+        XCTAssertEqual(calibration.visualOffset, 0.025, accuracy: 0.0001)
+    }
+
+    func testMIDIMappingAndLearnFlow() throws {
+        let dataManager = DataManager.shared
+        dataManager.resetMIDIMappingToDefault()
+
+        // Default mapping resolves 12 -> 12 and General MIDI 36 -> 12
+        XCTAssertEqual(dataManager.resolveIncomingMIDINote(12), 12)
+        XCTAssertEqual(dataManager.resolveIncomingMIDINote(36), 12)
+
+        // Activate MIDI Learn for Kick (canonical 12) and send note 60
+        dataManager.toggleMIDILearn(forCanonicalNote: 12)
+        XCTAssertEqual(dataManager.learningCanonicalNote, 12)
+        let resolved = dataManager.resolveIncomingMIDINote(60)
+        XCTAssertEqual(resolved, 12)
+        XCTAssertNil(dataManager.learningCanonicalNote)
+        XCTAssertEqual(dataManager.physicalNote(forCanonicalNote: 12), 60)
+        XCTAssertEqual(dataManager.resolveIncomingMIDINote(60), 12)
+    }
 }

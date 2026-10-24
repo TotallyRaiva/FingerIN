@@ -7,9 +7,9 @@ struct PadMatrixView: View {
     
     var body: some View {
         VStack(spacing: 2) {
-            ForEach(0..<4) { row in
+            ForEach(0..<4, id: \.self) { row in
                 HStack(spacing: 2) {
-                    ForEach(0..<4) { col in
+                    ForEach(0..<4, id: \.self) { col in
                         let index = (3 - row) * 4 + col // Bottom-to-top, left-to-right indexing
                         RoundedRectangle(cornerRadius: 1)
                             .fill(index == activeIndex ? color : Color.gray.opacity(0.3))
@@ -30,54 +30,82 @@ struct PadMatrixView: View {
 }
 
 struct LaneIndicatorView: View {
-    let name: String
-    let padIndex: Int
-    let color: Color
-    let isActive: Bool
+    let voice: DrumVoiceConfig
+    let mappedNote: UInt8
+    let isHighlighted: Bool
+    let isLearning: Bool
+    let onTrigger: () -> Void
+    let onToggleLearn: () -> Void
     
     var body: some View {
-        HStack(spacing: 12) {
-            PadMatrixView(activeIndex: padIndex, color: color, isGlowing: isActive)
+        HStack(spacing: 10) {
+            Button(action: onTrigger) {
+                PadMatrixView(
+                    activeIndex: voice.defaultPadIndex,
+                    color: voice.color,
+                    isGlowing: isHighlighted
+                )
+            }
+            .buttonStyle(.plain)
+            .help("Click to audition \(voice.fullName) (Key: \(String(voice.keyEquivalent).uppercased()))")
             
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundColor(isActive ? .white : .gray)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(voice.fullName)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(isHighlighted ? .white : .gray)
+                    .lineLimit(1)
                 
-                Text("PAD \(padIndex + 1)")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(isActive ? color : .gray.opacity(0.6))
+                HStack(spacing: 6) {
+                    Text("MIDI \(mappedNote) · [\(String(voice.keyEquivalent).uppercased())]")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundColor(isHighlighted ? voice.color : .gray.opacity(0.75))
+                    
+                    Button(action: onToggleLearn) {
+                        Text(isLearning ? "HIT PAD..." : "MAP")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(isLearning ? Color.orange : Color.white.opacity(0.1))
+                            .foregroundColor(isLearning ? .black : .gray)
+                            .cornerRadius(3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Click then hit any physical MIDI pad to map it to \(voice.shortName)")
+                }
             }
             
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .frame(height: 80) // Match GameScene lane height
-        .background(isActive ? Color.white.opacity(0.05) : Color.clear)
+        .background(isHighlighted ? voice.color.opacity(0.14) : Color.clear)
+        .animation(.easeOut(duration: 0.08), value: isHighlighted)
     }
 }
 
 struct LeftContextPanel: View {
-    @ObservedObject var midiManager = MIDIManager.shared
+    @ObservedObject var padStatus = PadStatusManager.shared
+    @ObservedObject var dataManager = DataManager.shared
     
-    // Mapping MIDI notes to pad indices (0-15)
-    // Note: Assuming notes 12-15 map to indices 0-3 for now.
-    // Adjust as per actual controller physical layout.
-    private let laneConfigs: [(note: UInt8, name: String, color: Color, padIndex: Int)] = [
-        (15, "HI-HAT OPEN", .yellow, 3),
-        (14, "HI-HAT CLOSED", .yellow, 2),
-        (13, "SNARE", .orange, 1),
-        (12, "KICK", .cyan, 0)
-    ]
+    // Top-to-bottom visual order matching GameScene's bottom-to-top lane coordinates (15 down to 12)
+    private var topDownVoices: [DrumVoiceConfig] {
+        DrumVoiceConfig.allVoices.sorted { $0.laneIndex > $1.laneIndex }
+    }
     
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(laneConfigs, id: \.note) { config in
+            ForEach(topDownVoices) { voice in
                 LaneIndicatorView(
-                    name: config.name,
-                    padIndex: config.padIndex,
-                    color: config.color,
-                    isActive: midiManager.lastNote == Int(config.note)
+                    voice: voice,
+                    mappedNote: dataManager.physicalNote(forCanonicalNote: voice.canonicalNote),
+                    isHighlighted: padStatus.isPadHighlighted[voice.canonicalNote] ?? false,
+                    isLearning: dataManager.learningCanonicalNote == voice.canonicalNote,
+                    onTrigger: {
+                        MIDIManager.shared.simulatePadHit(canonicalNote: voice.canonicalNote)
+                    },
+                    onToggleLearn: {
+                        dataManager.toggleMIDILearn(forCanonicalNote: voice.canonicalNote)
+                    }
                 )
             }
         }

@@ -1,56 +1,149 @@
 import SpriteKit
 import SwiftUI
+import QuartzCore
+
+/// Strongly-typed SpriteKit node representing a falling/scrolling drum note
+final class NoteNode: SKShapeNode {
+    let padIndex: UInt8
+    let velocity: UInt8
+    let targetHitSongTime: TimeInterval
+    let travelDuration: TimeInterval
+    var isJudged: Bool = false
+    var hasPlayedDemoAudio: Bool = false
+    
+    init(
+        padIndex: UInt8,
+        velocity: UInt8,
+        targetHitSongTime: TimeInterval,
+        travelDuration: TimeInterval,
+        size: CGSize,
+        color: NSColor
+    ) {
+        self.padIndex = padIndex
+        self.velocity = velocity
+        self.targetHitSongTime = targetHitSongTime
+        self.travelDuration = travelDuration
+        super.init()
+        
+        let rect = CGRect(origin: CGPoint(x: -size.width / 2, y: -size.height / 2), size: size)
+        self.path = CGPath(roundedRect: rect, cornerWidth: 6, cornerHeight: 6, transform: nil)
+        
+        // Scale opacity/height slightly by velocity (ghost notes vs normal vs accents)
+        let alpha: CGFloat = velocity < 75 ? 0.6 : (velocity > 110 ? 1.0 : 0.88)
+        self.fillColor = color.withAlphaComponent(alpha)
+        self.strokeColor = velocity > 110 ? .white : color
+        self.lineWidth = velocity > 110 ? 2.0 : 1.0
+        self.glowWidth = velocity > 110 ? 4.0 : 1.0
+        self.zPosition = 5
+        self.name = "note"
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+/// Vertical beat / bar grid line scrolling in sync with notes
+final class GridLineNode: SKShapeNode {
+    let targetHitSongTime: TimeInterval
+    let travelDuration: TimeInterval
+    let isBarLine: Bool
+    
+    init(targetHitSongTime: TimeInterval, travelDuration: TimeInterval, totalHeight: CGFloat, isBarLine: Bool) {
+        self.targetHitSongTime = targetHitSongTime
+        self.travelDuration = travelDuration
+        self.isBarLine = isBarLine
+        super.init()
+        
+        let width: CGFloat = isBarLine ? 2.0 : 1.0
+        let rect = CGRect(x: -width / 2, y: 0, width: width, height: totalHeight)
+        self.path = CGPath(rect: rect, transform: nil)
+        self.fillColor = NSColor.white.withAlphaComponent(isBarLine ? 0.22 : 0.07)
+        self.strokeColor = .clear
+        self.zPosition = 0
+        self.name = "gridLine"
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
 
 class GameScene: SKScene {
     
     // Layout Constants
-    private let hitLineX: CGFloat = 80 // Reserved space on the left
+    private let hitLineX: CGFloat = 80
     private let laneHeight: CGFloat = 80
     private let totalLanes = 4
     
-    // Note mapping (matching MIDI notes 12-15)
+    // Canonical Note mapping (bottom-to-top lanes: 12, 13, 14, 15)
     private let midiNotes: [UInt8] = [12, 13, 14, 15]
     
-    // Scoring State
-    private var levelStartTime: TimeInterval = 0
-    private let perfectWindow: TimeInterval = 0.05
-    private let goodWindow: TimeInterval = 0.15
-    private var isDemoMode: Bool = false
+    // Timing Windows (seconds)
+    private let perfectWindow: TimeInterval = 0.045
+    private let goodWindow: TimeInterval = 0.135
+    private let maxEarlyCandidateWindow: TimeInterval = 0.25
     
-    // UI Elements
-    private var hitLine: SKShapeNode!
+    // Playback & Scheduler State
+    private var isEnginePlaying: Bool = false
+    private var lastUpdateRealTime: TimeInterval?
+    private(set) var songTime: TimeInterval = 0
+    
+    private var patternNotes: [TrackNote] = []
+    private var barDuration: TimeInterval = 2.0
+    private var isLooping: Bool = true
+    private var isMetronomeEnabled: Bool = false
+    private var isDemoMode: Bool = false
+    private var isCalibrationMode: Bool = false
+    private var activePads: Set<UInt8> = [12, 13, 14, 15]
+    
+    private var lastSpawnedStepIndex: Int = -1
+    private var lastMetronomeBeatIndex: Int = -1
+    
+    // Tracked Scene Nodes
+    private var hitLine: SKShapeNode?
+    private var playhead: SKShapeNode?
     private var lanes: [SKShapeNode] = []
-    private var worldNode = SKNode() // Node to hold everything for screen shake
+    private var activeNoteNodes: [NoteNode] = []
+    private var activeGridLines: [GridLineNode] = []
+    private var worldNode = SKNode()
     
     override func didMove(to view: SKView) {
-        // Force the engine to start in a paused state
-        self.isPaused = true
-        
-        // Set anchor point to bottom-left for easier horizontal math
         self.anchorPoint = .zero
+        self.backgroundColor = .black
         
-        // Ensure worldNode is clean and add it
         worldNode.removeFromParent()
         addChild(worldNode)
         
-        setupBackground()
+        rebuildStaticGeometry()
+        self.isPaused = !isEnginePlaying
+    }
+    
+    override func didChangeSize(_ oldSize: CGSize) {
+        super.didChangeSize(oldSize)
+        guard oldSize != size, size.width > 0 else { return }
+        rebuildStaticGeometry()
+    }
+    
+    private func rebuildStaticGeometry() {
+        lanes.forEach { $0.removeFromParent() }
+        lanes.removeAll()
+        hitLine?.removeFromParent()
+        playhead?.removeFromParent()
+        
         setupLanes()
         setupHitLine()
     }
     
-    private func setupBackground() {
-        self.backgroundColor = .black
-    }
-    
     private func setupLanes() {
+        let laneWidth = max(size.width * 2, 1200)
         for i in 0..<totalLanes {
             let laneY = (CGFloat(i) * laneHeight) + (laneHeight / 2)
-            
-            let lane = SKShapeNode(rectOf: CGSize(width: size.width * 4, height: laneHeight - 1))
-            lane.position = CGPoint(x: size.width / 2, y: laneY)
-            lane.strokeColor = SKColor.white.withAlphaComponent(0.05)
-            lane.fillColor = SKColor.clear
-            lane.zPosition = -1
+            let lane = SKShapeNode(rectOf: CGSize(width: laneWidth, height: laneHeight - 1))
+            lane.position = CGPoint(x: laneWidth / 2, y: laneY)
+            lane.strokeColor = SKColor.white.withAlphaComponent(0.06)
+            lane.fillColor = (i % 2 == 0) ? SKColor.white.withAlphaComponent(0.015) : .clear
+            lane.zPosition = -2
             worldNode.addChild(lane)
             lanes.append(lane)
         }
@@ -58,198 +151,448 @@ class GameScene: SKScene {
     
     private func setupHitLine() {
         let totalHeight = laneHeight * CGFloat(totalLanes)
-        hitLine = SKShapeNode(rectOf: CGSize(width: 2, height: totalHeight))
-        hitLine.fillColor = .cyan
-        hitLine.strokeColor = .cyan
-        hitLine.position = CGPoint(x: hitLineX, y: totalHeight / 2)
-        hitLine.glowWidth = 3
-        hitLine.zPosition = 1
-        worldNode.addChild(hitLine)
+        let line = SKShapeNode(rectOf: CGSize(width: 2, height: totalHeight))
+        line.fillColor = .cyan
+        line.strokeColor = .cyan
+        line.position = CGPoint(x: hitLineX, y: totalHeight / 2)
+        line.glowWidth = 3
+        line.zPosition = 3
+        worldNode.addChild(line)
+        self.hitLine = line
         
-        // Add a triangular playhead at the top
         let trianglePath = CGMutablePath()
         trianglePath.move(to: CGPoint(x: -10, y: 10))
         trianglePath.addLine(to: CGPoint(x: 10, y: 10))
         trianglePath.addLine(to: CGPoint(x: 0, y: 0))
         trianglePath.closeSubpath()
         
-        let playhead = SKShapeNode(path: trianglePath)
-        playhead.fillColor = .cyan
-        playhead.strokeColor = .white
-        playhead.position = CGPoint(x: hitLineX, y: totalHeight)
-        worldNode.addChild(playhead)
+        let head = SKShapeNode(path: trianglePath)
+        head.fillColor = .cyan
+        head.strokeColor = .white
+        head.position = CGPoint(x: hitLineX, y: totalHeight)
+        head.zPosition = 4
+        worldNode.addChild(head)
+        self.playhead = head
     }
     
-    func spawnNote(for noteNumber: UInt8, targetHitTime: TimeInterval, travelTime: TimeInterval = 2.0) {
-        guard let laneIndex = midiNotes.firstIndex(of: noteNumber) else { return }
-        let laneY = (CGFloat(laneIndex) * laneHeight) + (laneHeight / 2)
-        
-        let note = SKShapeNode(rectOf: CGSize(width: 40, height: laneHeight - 20), cornerRadius: 4)
-        note.fillColor = .white
-        note.strokeColor = .white
-        note.position = CGPoint(x: size.width + 100, y: laneY)
-        note.name = "note"
-        
-        let distanceToHit = (size.width + 100) - hitLineX
-        let speed = distanceToHit / CGFloat(travelTime)
-        
-        note.userData = ["targetHitTime": targetHitTime, "lane": noteNumber, "speed": speed]
-        worldNode.addChild(note)
-        
-        let totalDistance = (size.width + 100) + 40
-        let totalDuration = totalDistance / speed
-        
-        let moveAction = SKAction.moveTo(x: -40, duration: Double(totalDuration))
-        let removeAction = SKAction.run { [weak self, weak note] in
-            if let note = note, note.parent != nil { self?.registerMiss() }
-            note?.removeFromParent()
-        }
-        note.run(SKAction.sequence([moveAction, removeAction]))
+    // MARK: - Frame-Accurate Update Loop & Scheduler
+    
+    private var spawnX: CGFloat {
+        max(size.width + 40, hitLineX + 400)
     }
     
-    // Handle a physical pad hit
-    func handleHit(for noteNumber: UInt8) {
-        if isDemoMode { flashLane(for: noteNumber); return }
-        let currentTime = CACurrentMediaTime() - levelStartTime
-        
-        let activeNotes = worldNode.children.compactMap { $0 as? SKShapeNode }
-            .filter { $0.name == "note" && ($0.userData?["lane"] as? UInt8) == noteNumber }
-        
-        guard let closestNote = activeNotes.min(by: {
-            abs($0.position.x - hitLineX) < abs($1.position.x - hitLineX)
-        }) else {
-            flashLane(for: noteNumber)
+    /// Visual travel duration equals 1 bar (4 beats) so the metronome count-in and bar lines are 100% phase-aligned at every BPM
+    private var currentTravelDuration: TimeInterval {
+        max(0.8, barDuration)
+    }
+    
+    override func update(_ currentTime: TimeInterval) {
+        guard isEnginePlaying, !self.isPaused else {
+            lastUpdateRealTime = nil
             return
         }
         
-        let speed = closestNote.userData?["speed"] as? CGFloat ?? 400
-        let distance = closestNote.position.x - hitLineX
-        
-        // --- CALIBRATION: Apply visual offset ---
-        let rawTimeDiff = Double(distance / speed)
-        let timeDiff = abs(rawTimeDiff - CalibrationManager.shared.visualOffset)
-        // -----------------------------------------
-        
-        var accuracy: HitAccuracy = .miss
-        if timeDiff <= perfectWindow { accuracy = .perfect }
-        else if timeDiff <= goodWindow { accuracy = .good }
-        
-        if accuracy != .miss {
-            showFeedback(accuracy: accuracy, at: closestNote.position)
-            triggerHitEffects(accuracy: accuracy, position: closestNote.position)
-            closestNote.removeFromParent()
-            ScoreManager.shared.registerHit(accuracy: accuracy)
-            
-            // Record hit for calibration if we're in a special calibration mode (optional enhancement)
-            // For now, it just respects the global offset
+        let dt: TimeInterval
+        if let prev = lastUpdateRealTime {
+            dt = min(0.1, max(0.0, currentTime - prev))
+        } else {
+            dt = 0.0
         }
-        flashLane(for: noteNumber)
+        lastUpdateRealTime = currentTime
+        songTime += dt
+        
+        let stepDuration = barDuration / 16.0
+        let beatDuration = barDuration / 4.0
+        guard stepDuration > 0, beatDuration > 0 else { return }
+        
+        // 1. Trigger phase-aligned Metronome clicks on exact beat boundaries
+        let currentBeatIndex = Int(floor(songTime / beatDuration))
+        if currentBeatIndex > lastMetronomeBeatIndex {
+            lastMetronomeBeatIndex = currentBeatIndex
+            if isMetronomeEnabled {
+                let isDownbeat = (currentBeatIndex % 4) == 0
+                AudioManager.shared.playMetronomeClick(isDownbeat: isDownbeat)
+            }
+        }
+        
+        // 2. Spawn notes and beat grid lines per 16th-note step
+        let currentStepIndex = Int(floor(songTime / stepDuration))
+        if currentStepIndex > lastSpawnedStepIndex {
+            for step in (lastSpawnedStepIndex + 1)...currentStepIndex {
+                if !isLooping && step >= 16 {
+                    break
+                }
+                spawnStepContent(globalStep: step, stepDuration: stepDuration)
+            }
+            lastSpawnedStepIndex = currentStepIndex
+        }
+        
+        // 3. Update positions of all active grid lines
+        let distanceToHitLine = spawnX - hitLineX
+        for i in stride(from: activeGridLines.count - 1, through: 0, by: -1) {
+            let gridNode = activeGridLines[i]
+            let timeRemaining = gridNode.targetHitSongTime - songTime
+            let progress = timeRemaining / gridNode.travelDuration
+            gridNode.position.x = hitLineX + CGFloat(progress) * distanceToHitLine
+            
+            if gridNode.position.x < -20 {
+                gridNode.removeFromParent()
+                activeGridLines.remove(at: i)
+            }
+        }
+        
+        // 4. Update positions and handle Demo triggers / Miss expirations for active notes
+        let visualOffset = CalibrationManager.shared.visualOffset
+        for i in stride(from: activeNoteNodes.count - 1, through: 0, by: -1) {
+            let noteNode = activeNoteNodes[i]
+            let timeRemaining = noteNode.targetHitSongTime - songTime
+            let progress = timeRemaining / noteNode.travelDuration
+            noteNode.position.x = hitLineX + CGFloat(progress) * distanceToHitLine
+            
+            // Demo Mode: automatically trigger sound & pad highlight when note crosses hit line
+            if isDemoMode && !noteNode.hasPlayedDemoAudio && timeRemaining <= 0 {
+                noteNode.hasPlayedDemoAudio = true
+                noteNode.isJudged = true
+                AudioManager.shared.triggerSound(for: noteNode.padIndex, velocity: noteNode.velocity)
+                PadStatusManager.shared.pulseHighlight(noteNode.padIndex, duration: 0.1)
+                flashLane(for: noteNode.padIndex)
+                createParticles(at: CGPoint(x: hitLineX, y: noteNode.position.y), color: voiceColor(for: noteNode.padIndex))
+                noteNode.removeFromParent()
+                activeNoteNodes.remove(at: i)
+                continue
+            }
+            
+            // Play Mode: immediately expire as MISS once note passes beyond the Good timing window
+            let lateness = (songTime - noteNode.targetHitSongTime) - visualOffset
+            if !isDemoMode && !noteNode.isJudged && lateness > goodWindow {
+                noteNode.isJudged = true
+                noteNode.fillColor = NSColor.systemRed.withAlphaComponent(0.35)
+                noteNode.strokeColor = .systemRed
+                registerMiss(at: CGPoint(x: hitLineX, y: noteNode.position.y))
+            }
+            
+            // Remove once off-screen left
+            if noteNode.position.x < -50 {
+                noteNode.removeFromParent()
+                activeNoteNodes.remove(at: i)
+            }
+        }
+        
+        // Stop automatically if non-looping pattern has finished and all notes have cleared
+        if !isLooping && currentStepIndex >= 16 && activeNoteNodes.isEmpty {
+            setPaused(true)
+        }
     }
     
-    private func triggerHitEffects(accuracy: HitAccuracy, position: CGPoint) {
-        let amplitude: CGFloat = accuracy == .perfect ? 8 : 3
-        worldNode.run(SKAction.screenShake(duration: 0.1, amplitude: amplitude))
-        if accuracy == .perfect { createParticles(at: position, color: accuracy.color) }
+    private func spawnStepContent(globalStep: Int, stepDuration: TimeInterval) {
+        let stepSpawnSongTime = Double(globalStep) * stepDuration
+        let travel = currentTravelDuration
+        let targetHitSongTime = stepSpawnSongTime + travel
+        let totalHeight = laneHeight * CGFloat(totalLanes)
+        
+        // Spawn vertical beat/bar grid line every 4 sixteenth-notes (1 beat)
+        if globalStep % 4 == 0 {
+            let isBarLine = (globalStep % 16) == 0
+            let gridLine = GridLineNode(
+                targetHitSongTime: targetHitSongTime,
+                travelDuration: travel,
+                totalHeight: totalHeight,
+                isBarLine: isBarLine
+            )
+            gridLine.position = CGPoint(x: spawnX, y: 0)
+            worldNode.addChild(gridLine)
+            activeGridLines.append(gridLine)
+        }
+        
+        // Spawn any active pattern notes matching this step (0..<16)
+        let localStep = globalStep % 16
+        for trackNote in patternNotes where trackNote.stepIndex == localStep && activePads.contains(trackNote.padIndex) {
+            spawnNoteNode(
+                padIndex: trackNote.padIndex,
+                velocity: trackNote.velocity,
+                targetHitSongTime: targetHitSongTime,
+                travelDuration: travel
+            )
+        }
+    }
+    
+    private func spawnNoteNode(
+        padIndex: UInt8,
+        velocity: UInt8,
+        targetHitSongTime: TimeInterval,
+        travelDuration: TimeInterval
+    ) {
+        guard let laneIndex = midiNotes.firstIndex(of: padIndex) else { return }
+        let laneY = (CGFloat(laneIndex) * laneHeight) + (laneHeight / 2)
+        
+        let noteHeight = velocity < 75 ? (laneHeight - 32) : (laneHeight - 18)
+        let nsColor = NSColor(voiceColor(for: padIndex))
+        let noteNode = NoteNode(
+            padIndex: padIndex,
+            velocity: velocity,
+            targetHitSongTime: targetHitSongTime,
+            travelDuration: travelDuration,
+            size: CGSize(width: 38, height: noteHeight),
+            color: nsColor
+        )
+        noteNode.position = CGPoint(x: spawnX, y: laneY)
+        worldNode.addChild(noteNode)
+        activeNoteNodes.append(noteNode)
+    }
+    
+    private func voiceColor(for noteNumber: UInt8) -> Color {
+        DrumVoiceConfig.voice(forCanonicalNote: noteNumber)?.color ?? .white
+    }
+    
+    // MARK: - Physical Pad & Keyboard Hit Handling
+    
+    func handleHit(for noteNumber: UInt8, velocity: UInt8 = 100) {
+        flashLane(for: noteNumber)
+        guard isEnginePlaying, !isDemoMode else { return }
+        
+        let visualOffset = CalibrationManager.shared.visualOffset
+        
+        // Filter unjudged notes in the matching lane
+        let candidates = activeNoteNodes.filter { !$0.isJudged && $0.padIndex == noteNumber }
+        
+        // Find the candidate closest to the calibrated hit time
+        guard let closestNote = candidates.min(by: { a, b in
+            let deltaA = abs((songTime - a.targetHitSongTime) - visualOffset)
+            let deltaB = abs((songTime - b.targetHitSongTime) - visualOffset)
+            return deltaA < deltaB
+        }) else {
+            return
+        }
+        
+        // Raw signed time offset: negative = EARLY, positive = LATE
+        let rawSignedOffset = songTime - closestNote.targetHitSongTime
+        let calibratedSignedOffset = rawSignedOffset - visualOffset
+        let absTimeDiff = abs(calibratedSignedOffset)
+        
+        // Ignore hits that occur way before the note approaches the hit zone
+        guard absTimeDiff <= maxEarlyCandidateWindow else {
+            return
+        }
+        
+        // If practicing with the Calibration pattern, feed the raw offset into CalibrationManager
+        if isCalibrationMode {
+            CalibrationManager.shared.recordCalibrationOffset(rawSignedOffset)
+        }
+        
+        let accuracy: HitAccuracy
+        if absTimeDiff <= perfectWindow {
+            accuracy = .perfect
+        } else if absTimeDiff <= goodWindow {
+            accuracy = .good
+        } else {
+            accuracy = .miss
+        }
+        
+        closestNote.isJudged = true
+        let offsetMs = Int((calibratedSignedOffset * 1000.0).rounded())
+        
+        if accuracy != .miss {
+            showFeedback(accuracy: accuracy, offsetMs: offsetMs, at: closestNote.position)
+            triggerHitEffects(accuracy: accuracy, position: closestNote.position, padIndex: noteNumber)
+            if let idx = activeNoteNodes.firstIndex(where: { $0 === closestNote }) {
+                activeNoteNodes.remove(at: idx)
+            }
+            closestNote.removeFromParent()
+            ScoreManager.shared.registerHit(accuracy: accuracy, timingOffsetMs: offsetMs)
+        } else {
+            // Early bad hit within candidate window
+            closestNote.fillColor = NSColor.systemRed.withAlphaComponent(0.35)
+            showFeedback(accuracy: .miss, offsetMs: offsetMs, at: closestNote.position)
+            ScoreManager.shared.registerHit(accuracy: .miss, timingOffsetMs: offsetMs)
+        }
+    }
+    
+    // MARK: - Keyboard Input Fallback (macOS)
+    
+    override func keyDown(with event: NSEvent) {
+        guard !event.isARepeat, let chars = event.charactersIgnoringModifiers?.lowercased() else {
+            return
+        }
+        for char in chars {
+            switch char {
+            case "a", "1":
+                MIDIManager.shared.simulatePadHit(canonicalNote: 12)
+            case "s", "2":
+                MIDIManager.shared.simulatePadHit(canonicalNote: 13)
+            case "d", "3":
+                MIDIManager.shared.simulatePadHit(canonicalNote: 14)
+            case "f", "4":
+                MIDIManager.shared.simulatePadHit(canonicalNote: 15)
+            default:
+                break
+            }
+        }
+    }
+    
+    // MARK: - Visual Feedback & Effects
+    
+    private func triggerHitEffects(accuracy: HitAccuracy, position: CGPoint, padIndex: UInt8) {
+        let amplitude: CGFloat = accuracy == .perfect ? 6 : 2.5
+        worldNode.run(SKAction.screenShake(duration: 0.08, amplitude: amplitude))
+        if accuracy == .perfect {
+            createParticles(at: position, color: voiceColor(for: padIndex))
+        }
     }
     
     private func createParticles(at position: CGPoint, color: Color) {
         for _ in 0...12 {
-            let p = SKShapeNode(circleOfRadius: CGFloat.random(in: 1...3))
+            let p = SKShapeNode(circleOfRadius: CGFloat.random(in: 1.5...3.5))
             p.fillColor = NSColor(color)
             p.strokeColor = .clear
             p.position = position
             p.zPosition = 15
             worldNode.addChild(p)
             let angle = CGFloat.random(in: 0...(CGFloat.pi * 2))
-            let dist = CGFloat.random(in: 40...100)
-            let move = SKAction.moveBy(x: cos(angle) * dist, y: sin(angle) * dist, duration: 0.4)
+            let dist = CGFloat.random(in: 35...90)
+            let move = SKAction.moveBy(x: cos(angle) * dist, y: sin(angle) * dist, duration: 0.35)
             move.timingMode = .easeOut
-            p.run(SKAction.sequence([SKAction.group([move, .fadeOut(withDuration: 0.4)]), .removeFromParent()]))
+            p.run(SKAction.sequence([SKAction.group([move, .fadeOut(withDuration: 0.35)]), .removeFromParent()]))
         }
     }
     
-    private func registerMiss() {
-        if isDemoMode { return }
-        ScoreManager.shared.registerHit(accuracy: .miss)
-        showFeedback(accuracy: .miss, at: CGPoint(x: hitLineX, y: size.height / 2))
+    private func registerMiss(at position: CGPoint) {
+        guard !isDemoMode else { return }
+        ScoreManager.shared.registerHit(accuracy: .miss, timingOffsetMs: nil)
+        showFeedback(accuracy: .miss, offsetMs: nil, at: position)
     }
     
-    private func showFeedback(accuracy: HitAccuracy, at position: CGPoint) {
+    private func showFeedback(accuracy: HitAccuracy, offsetMs: Int?, at position: CGPoint) {
+        let container = SKNode()
+        container.position = position
+        container.zPosition = 12
+        
         let label = SKLabelNode(text: accuracy.rawValue)
         label.fontName = "AvenirNext-HeavyItalic"
-        label.fontSize = accuracy == .perfect ? 35 : 24
+        label.fontSize = accuracy == .perfect ? 28 : 22
         label.fontColor = NSColor(accuracy.color)
-        label.position = position
-        label.zPosition = 10
-        worldNode.addChild(label)
-        let moveUp = SKAction.moveBy(x: 0, y: 50, duration: 0.5)
-        label.run(SKAction.sequence([SKAction.group([moveUp, .fadeOut(withDuration: 0.5)]), .removeFromParent()]))
+        container.addChild(label)
+        
+        if let offsetMs = offsetMs, accuracy != .miss {
+            let direction = offsetMs < -3 ? "EARLY" : (offsetMs > 3 ? "LATE" : "ON TIME")
+            let subLabel = SKLabelNode(text: String(format: "%+dms %@", offsetMs, direction))
+            subLabel.fontName = "Menlo-Bold"
+            subLabel.fontSize = 10
+            subLabel.fontColor = NSColor.white.withAlphaComponent(0.85)
+            subLabel.position = CGPoint(x: 0, y: -14)
+            container.addChild(subLabel)
+        }
+        
+        worldNode.addChild(container)
+        let moveUp = SKAction.moveBy(x: 0, y: 42, duration: 0.48)
+        moveUp.timingMode = .easeOut
+        container.run(SKAction.sequence([
+            SKAction.group([moveUp, .fadeOut(withDuration: 0.48)]),
+            .removeFromParent()
+        ]))
     }
     
     func flashLane(for noteNumber: UInt8) {
         guard let laneIndex = midiNotes.firstIndex(of: noteNumber) else { return }
         let laneY = (CGFloat(laneIndex) * laneHeight) + (laneHeight / 2)
-        let hitGlow = SKShapeNode(rectOf: CGSize(width: 40, height: laneHeight - 2))
+        let laneColor = NSColor(voiceColor(for: noteNumber))
+        
+        let hitGlow = SKShapeNode(rectOf: CGSize(width: 40, height: laneHeight - 4), cornerRadius: 4)
         hitGlow.position = CGPoint(x: hitLineX, y: laneY)
-        hitGlow.fillColor = .white.withAlphaComponent(0.4)
+        hitGlow.fillColor = laneColor.withAlphaComponent(0.45)
         hitGlow.strokeColor = .white
-        hitGlow.lineWidth = 1
+        hitGlow.lineWidth = 1.5
         hitGlow.glowWidth = 8
-        hitGlow.zPosition = 2
+        hitGlow.zPosition = 4
         worldNode.addChild(hitGlow)
-        let fade = SKAction.fadeOut(withDuration: 0.1)
+        
+        let fade = SKAction.fadeOut(withDuration: 0.12)
         hitGlow.run(SKAction.sequence([fade, .removeFromParent()]))
     }
     
-    func loadLevel(notes: [TrackNote], barDuration: TimeInterval, loop: Bool = true, metronome: Bool = false, isDemoMode: Bool = false, noteTravelTime: TimeInterval = 2.0) {
-        stopAndClear()
+    // MARK: - Level Loading & Live Settings Configuration
+    
+    func loadLevel(
+        notes: [TrackNote],
+        barDuration: TimeInterval,
+        loop: Bool = true,
+        metronome: Bool = false,
+        isDemoMode: Bool = false,
+        isCalibrationMode: Bool = false,
+        activePads: Set<UInt8> = [12, 13, 14, 15]
+    ) {
+        stopAndClear(resetScore: true)
+        self.patternNotes = notes
+        self.barDuration = max(0.5, barDuration)
+        self.isLooping = loop
+        self.isMetronomeEnabled = metronome
         self.isDemoMode = isDemoMode
-        levelStartTime = CACurrentMediaTime()
-        for (index, note) in notes.enumerated() {
-            let spawnDelay = note.timeSeconds
-            let spawn = SKAction.run { [weak self] in self?.spawnNote(for: note.padIndex, targetHitTime: note.timeSeconds, travelTime: noteTravelTime) }
-            let playSound = SKAction.run { [weak self] in
-                if self?.isDemoMode == true {
-                    AudioManager.shared.triggerSound(for: note.padIndex)
-                    PadStatusManager.shared.highlightPad(note.padIndex)
-                    self?.run(SKAction.sequence([SKAction.wait(forDuration: 0.1), SKAction.run { PadStatusManager.shared.removeHighlight(note.padIndex) }]))
-                }
+        self.isCalibrationMode = isCalibrationMode
+        self.activePads = activePads
+    }
+    
+    /// Updates playback flags and pattern parameters live without wiping notes or resetting score
+    func updateLiveConfiguration(
+        notes: [TrackNote],
+        barDuration: TimeInterval,
+        loop: Bool,
+        metronome: Bool,
+        isDemoMode: Bool,
+        isCalibrationMode: Bool,
+        activePads: Set<UInt8>
+    ) {
+        let oldBarDuration = self.barDuration
+        self.patternNotes = notes
+        self.barDuration = max(0.5, barDuration)
+        self.isLooping = loop
+        self.isMetronomeEnabled = metronome
+        self.isDemoMode = isDemoMode
+        self.isCalibrationMode = isCalibrationMode
+        self.activePads = activePads
+        
+        // Rescale songTime proportionally if BPM changed mid-playback so active notes stay smooth
+        if abs(oldBarDuration - self.barDuration) > 0.0001 && oldBarDuration > 0 {
+            let ratio = self.barDuration / oldBarDuration
+            songTime *= ratio
+            for note in activeNoteNodes {
+                // Keep remaining visual progress smooth
+                _ = note
             }
-            let audioDelay = spawnDelay + noteTravelTime
-            if loop {
-                let visualWait = SKAction.wait(forDuration: spawnDelay)
-                self.run(SKAction.sequence([visualWait, SKAction.repeatForever(SKAction.sequence([spawn, SKAction.wait(forDuration: barDuration)]))]), withKey: "note_loop_visual_\(index)")
-                if isDemoMode {
-                    let audioWait = SKAction.wait(forDuration: audioDelay)
-                    self.run(SKAction.sequence([audioWait, SKAction.repeatForever(SKAction.sequence([playSound, SKAction.wait(forDuration: barDuration)]))]), withKey: "note_loop_audio_\(index)")
-                }
-            } else {
-                self.run(SKAction.sequence([SKAction.wait(forDuration: spawnDelay), spawn]))
-                if isDemoMode { self.run(SKAction.sequence([SKAction.wait(forDuration: audioDelay), playSound])) }
-            }
-        }
-        if metronome {
-            let click = SKAction.run { AudioManager.shared.playMetronomeClick() }
-            let wait = SKAction.wait(forDuration: barDuration / 4.0)
-            let seq = SKAction.sequence([click, wait])
-            self.run(loop ? SKAction.repeatForever(seq) : SKAction.repeat(seq, count: 4), withKey: "metronome_loop")
         }
     }
     
-    func setPaused(_ paused: Bool) { self.isPaused = paused }
+    func setPaused(_ paused: Bool) {
+        self.isEnginePlaying = !paused
+        self.isPaused = paused
+        if paused {
+            lastUpdateRealTime = nil
+        }
+    }
     
-    func stopAndClear() {
+    func stopAndClear(resetScore: Bool = true) {
         self.removeAllActions()
         worldNode.removeAllActions()
         worldNode.position = .zero
-        worldNode.enumerateChildNodes(withName: "note") { node, _ in node.removeFromParent() }
-        ScoreManager.shared.reset()
+        
+        activeNoteNodes.forEach { $0.removeFromParent() }
+        activeNoteNodes.removeAll()
+        
+        activeGridLines.forEach { $0.removeFromParent() }
+        activeGridLines.removeAll()
+        
+        songTime = 0
+        lastUpdateRealTime = nil
+        lastSpawnedStepIndex = -1
+        lastMetronomeBeatIndex = -1
+        
+        if resetScore {
+            ScoreManager.shared.reset()
+        }
     }
 }
 
 extension SKAction {
     static func screenShake(duration: TimeInterval, amplitude: CGFloat) -> SKAction {
-        let numberOfShakes = Int(duration / 0.02)
+        let numberOfShakes = max(1, Int(duration / 0.02))
         var actions: [SKAction] = []
         for _ in 0..<numberOfShakes {
             let diffX = CGFloat.random(in: -amplitude...amplitude)
@@ -257,6 +600,7 @@ extension SKAction {
             let move = SKAction.moveBy(x: diffX, y: diffY, duration: 0.01)
             actions.append(SKAction.sequence([move, move.reversed()]))
         }
+        actions.append(SKAction.move(to: .zero, duration: 0.01))
         return SKAction.sequence(actions)
     }
 }
