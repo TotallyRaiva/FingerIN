@@ -12,6 +12,9 @@ class PadStatusManager: ObservableObject {
         15: false
     ]
     
+    /// Current 16th-note step index (0..<32) crossing the hit line during active playback
+    @Published var activePatternStep: Int? = nil
+    
     private var autoReleaseTasks: [UInt8: DispatchWorkItem] = [:]
     
     private init() {}

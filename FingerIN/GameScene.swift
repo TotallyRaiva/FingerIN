@@ -25,18 +25,32 @@ final class NoteNode: SKShapeNode {
         self.travelDuration = travelDuration
         super.init()
         
-        let cornerRadius: CGFloat = velocity < 70 ? 8 : 6
+        let cornerRadius: CGFloat = 7
         let rect = CGRect(origin: CGPoint(x: -size.width / 2, y: -size.height / 2), size: size)
         self.path = CGPath(roundedRect: rect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
         
         // Visual distinction between Ghost notes (<70), Normal notes (70..110), and Accents (>110)
-        let alpha: CGFloat = velocity < 70 ? 0.50 : (velocity > 110 ? 0.98 : 0.84)
+        let alpha: CGFloat = velocity < 70 ? 0.58 : (velocity > 110 ? 1.0 : 0.90)
         self.fillColor = color.withAlphaComponent(alpha)
-        self.strokeColor = velocity > 110 ? .white : color.withAlphaComponent(0.9)
-        self.lineWidth = velocity > 110 ? 2.2 : 1.0
-        self.glowWidth = velocity > 110 ? 4.5 : (velocity < 70 ? 0.0 : 1.5)
+        self.strokeColor = velocity > 110 ? .white : NSColor(red: 0.067, green: 0.071, blue: 0.086, alpha: 0.95)
+        self.lineWidth = velocity > 110 ? 2.4 : 2.0
+        self.glowWidth = velocity > 110 ? 5.0 : (velocity < 70 ? 0.0 : 2.0)
         self.zPosition = 5
         self.name = "note"
+        
+        // Tactile inner top highlight strip (Comix / MPC backlit pad cell vibe)
+        if velocity >= 70 {
+            let highlightRect = CGRect(
+                x: -size.width / 2 + 4,
+                y: size.height / 2 - 6,
+                width: max(6, size.width - 8),
+                height: 3
+            )
+            let highlightNode = SKShapeNode(rect: highlightRect, cornerRadius: 1.5)
+            highlightNode.fillColor = NSColor.white.withAlphaComponent(0.32)
+            highlightNode.strokeColor = .clear
+            addChild(highlightNode)
+        }
     }
     
     required init?(coder aDecoder: NSCoder) {
@@ -131,7 +145,7 @@ class GameScene: SKScene {
     
     override func didMove(to view: SKView) {
         self.anchorPoint = .zero
-        self.backgroundColor = .black
+        self.backgroundColor = NSColor(red: 0.078, green: 0.086, blue: 0.106, alpha: 1.0) // #14161B
         
         worldNode.removeFromParent()
         addChild(worldNode)
@@ -160,21 +174,36 @@ class GameScene: SKScene {
         let laneWidth = max(size.width * 2, 1200)
         for i in 0..<totalLanes {
             let laneY = (CGFloat(i) * laneHeight) + (laneHeight / 2)
-            let lane = SKShapeNode(rectOf: CGSize(width: laneWidth, height: laneHeight - 1))
+            let lane = SKShapeNode(rectOf: CGSize(width: laneWidth, height: laneHeight - 2))
             lane.position = CGPoint(x: laneWidth / 2, y: laneY)
-            lane.strokeColor = SKColor.white.withAlphaComponent(0.06)
-            lane.fillColor = (i % 2 == 0) ? SKColor.white.withAlphaComponent(0.015) : .clear
+            lane.strokeColor = SKColor.white.withAlphaComponent(0.08)
+            lane.fillColor = (i % 2 == 0)
+                ? SKColor(red: 0.110, green: 0.122, blue: 0.149, alpha: 1.0)
+                : SKColor(red: 0.082, green: 0.090, blue: 0.114, alpha: 1.0)
             lane.zPosition = -2
             worldNode.addChild(lane)
             lanes.append(lane)
+            
+            // Target MPC pad slot outline at hitLineX
+            let noteNum = midiNotes[i]
+            let slotColor = NSColor(voiceColor(for: noteNum))
+            let targetSlot = SKShapeNode(rectOf: CGSize(width: 44, height: laneHeight - 16), cornerRadius: 8)
+            targetSlot.position = CGPoint(x: hitLineX, y: laneY)
+            targetSlot.fillColor = slotColor.withAlphaComponent(0.08)
+            targetSlot.strokeColor = slotColor.withAlphaComponent(0.45)
+            targetSlot.lineWidth = 2.0
+            targetSlot.zPosition = -1
+            worldNode.addChild(targetSlot)
+            lanes.append(targetSlot)
         }
     }
     
     private func setupHitLine() {
         let totalHeight = laneHeight * CGFloat(totalLanes)
-        let line = SKShapeNode(rectOf: CGSize(width: 2, height: totalHeight))
-        line.fillColor = .cyan
-        line.strokeColor = .cyan
+        let goldColor = NSColor(red: 1.0, green: 0.722, blue: 0.0, alpha: 1.0) // #FFB800
+        let line = SKShapeNode(rectOf: CGSize(width: 3, height: totalHeight))
+        line.fillColor = goldColor
+        line.strokeColor = goldColor
         line.position = CGPoint(x: hitLineX, y: totalHeight / 2)
         line.glowWidth = 3
         line.zPosition = 3
@@ -182,14 +211,15 @@ class GameScene: SKScene {
         self.hitLine = line
         
         let trianglePath = CGMutablePath()
-        trianglePath.move(to: CGPoint(x: -10, y: 10))
-        trianglePath.addLine(to: CGPoint(x: 10, y: 10))
-        trianglePath.addLine(to: CGPoint(x: 0, y: 0))
+        trianglePath.move(to: CGPoint(x: -11, y: 0))
+        trianglePath.addLine(to: CGPoint(x: 11, y: 0))
+        trianglePath.addLine(to: CGPoint(x: 0, y: -13))
         trianglePath.closeSubpath()
         
         let head = SKShapeNode(path: trianglePath)
-        head.fillColor = .cyan
-        head.strokeColor = .white
+        head.fillColor = goldColor
+        head.strokeColor = NSColor(red: 0.067, green: 0.071, blue: 0.086, alpha: 1.0)
+        head.lineWidth = 2.0
         head.position = CGPoint(x: hitLineX, y: totalHeight)
         head.zPosition = 4
         worldNode.addChild(head)
@@ -255,14 +285,17 @@ class GameScene: SKScene {
                 if !isLooping && hitStep >= totalPatternSteps {
                     break
                 }
+                let localStep = hitStep % max(16, totalPatternSteps)
+                PadStatusManager.shared.activePatternStep = localStep
                 if isBackingTrackEnabled && !isCalibrationMode {
-                    let localStep = hitStep % max(16, totalPatternSteps)
                     for event in backingEvents where event.stepIndex == localStep {
                         AudioManager.shared.playBackingEvent(event, stepDuration: stepDuration)
                     }
                 }
             }
             lastHitStepIndex = currentHitStep
+        } else if currentHitStep < 0 {
+            PadStatusManager.shared.activePatternStep = max(0, currentStepIndex) % 16
         }
         
         // 4. Update positions of all active grid lines
@@ -624,6 +657,7 @@ class GameScene: SKScene {
         self.isPaused = paused
         if paused {
             lastUpdateRealTime = nil
+            PadStatusManager.shared.activePatternStep = nil
             AudioManager.shared.stopBackingAudio()
         }
     }
@@ -632,6 +666,7 @@ class GameScene: SKScene {
         self.removeAllActions()
         worldNode.removeAllActions()
         worldNode.position = .zero
+        PadStatusManager.shared.activePatternStep = nil
         AudioManager.shared.stopBackingAudio()
         
         activeNoteNodes.forEach { $0.removeFromParent() }

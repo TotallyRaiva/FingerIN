@@ -4,12 +4,36 @@ import SwiftUI
 import Combine
 import os
 
+/// Shared Comix × Retro Akai MPC 2000XL design system tokens matching the web showcase
+enum MPCTheme {
+    static let mpcCream = Color(red: 0.965, green: 0.945, blue: 0.898)      // #F6F1E5
+    static let mpcBeige = Color(red: 0.918, green: 0.875, blue: 0.796)      // #EADFCB
+    static let mpcBeigeDark = Color(red: 0.847, green: 0.788, blue: 0.682)  // #D8C9AE
+    static let mpcChassis = Color(red: 0.129, green: 0.141, blue: 0.169)    // #21242B
+    static let mpcPanel = Color(red: 0.078, green: 0.086, blue: 0.106)      // #14161B
+    static let mpcSlate = Color(red: 0.180, green: 0.200, blue: 0.239)      // #2E333D
+    static let mpcPadBed = Color(red: 0.231, green: 0.259, blue: 0.298)     // #3B424C
+    static let ink = Color(red: 0.067, green: 0.071, blue: 0.086)           // #111216
+    static let lcdBackground = Color(red: 0.051, green: 0.149, blue: 0.122) // #0D261F
+    static let lcdGlow = Color(red: 0.220, green: 0.973, blue: 0.698)       // #38F8B2
+    static let lcdDim = Color(red: 0.114, green: 0.420, blue: 0.318)        // #1D6B51
+    static let kick = Color(red: 1.000, green: 0.302, blue: 0.161)          // #FF4D29
+    static let snare = Color(red: 1.000, green: 0.722, blue: 0.000)         // #FFB800
+    static let closedHat = Color(red: 0.000, green: 0.839, blue: 0.498)     // #00D67F
+    static let openHat = Color(red: 0.000, green: 0.706, blue: 1.000)       // #00B4FF
+    static let purple = Color(red: 0.608, green: 0.420, blue: 1.000)        // #9B6BFF
+}
+
 /// Canonical definition for each of the 4 finger-drumming voices/lanes
 struct DrumVoiceConfig: Identifiable, Equatable {
     let laneIndex: Int          // 0 (bottom) to 3 (top)
     let canonicalNote: UInt8    // Internal canonical ID: 12, 13, 14, 15
+    let gmNote: UInt8           // Standard General MIDI drum note (36, 38, 42, 46)
+    let padCode: String         // e.g. "PAD A01"
     let shortName: String       // e.g. "KICK"
-    let fullName: String        // e.g. "KICK"
+    let matrixLabel: String     // e.g. "KICK (36)"
+    let fullName: String        // e.g. "KICK DRUM"
+    let comicBurst: String      // e.g. "BOOM!"
     let sampleName: String      // e.g. "kick"
     let color: Color
     let defaultPadIndex: Int    // 0-15 index on 4x4 matrix
@@ -21,40 +45,56 @@ struct DrumVoiceConfig: Identifiable, Equatable {
         DrumVoiceConfig(
             laneIndex: 0,
             canonicalNote: 12,
+            gmNote: 36,
+            padCode: "PAD A01",
             shortName: "KICK",
+            matrixLabel: "KICK (36)",
             fullName: "KICK DRUM",
+            comicBurst: "BOOM!",
             sampleName: "kick",
-            color: .cyan,
+            color: MPCTheme.kick,
             defaultPadIndex: 0,
             keyEquivalent: "a"
         ),
         DrumVoiceConfig(
             laneIndex: 1,
             canonicalNote: 13,
+            gmNote: 38,
+            padCode: "PAD A02",
             shortName: "SNARE",
+            matrixLabel: "SNARE (38)",
             fullName: "SNARE DRUM",
+            comicBurst: "CRACK!",
             sampleName: "Snare",
-            color: .orange,
+            color: MPCTheme.snare,
             defaultPadIndex: 1,
             keyEquivalent: "s"
         ),
         DrumVoiceConfig(
             laneIndex: 2,
             canonicalNote: 14,
-            shortName: "HH C",
-            fullName: "HI-HAT CLOSED",
+            gmNote: 42,
+            padCode: "PAD A03",
+            shortName: "CL-HAT",
+            matrixLabel: "CL-HAT (42)",
+            fullName: "CLOSED HAT",
+            comicBurst: "CHK!",
             sampleName: "hihat_closed",
-            color: .yellow,
+            color: MPCTheme.closedHat,
             defaultPadIndex: 2,
             keyEquivalent: "d"
         ),
         DrumVoiceConfig(
             laneIndex: 3,
             canonicalNote: 15,
-            shortName: "HH O",
-            fullName: "HI-HAT OPEN",
+            gmNote: 46,
+            padCode: "PAD A04",
+            shortName: "OP-HAT",
+            matrixLabel: "OP-HAT (46)",
+            fullName: "OPEN HAT",
+            comicBurst: "TSSS!",
             sampleName: "hihat_open",
-            color: .mint,
+            color: MPCTheme.openHat,
             defaultPadIndex: 3,
             keyEquivalent: "f"
         )

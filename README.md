@@ -24,7 +24,7 @@
 - **Interactive GitHub Page (CV / Portfolio Showcase):** [**https://totallyraiva.github.io/FingerIN/**](https://totallyraiva.github.io/FingerIN/)  
   *Includes an interactive browser-based Retro MPC pad deck powered by the actual app `.wav` samples, live 16-step groove sequencer, Rhodes/Bass synth accompaniment, and an 18-groove visual matrix explorer.*
 - **Direct macOS Installer Download (`.dmg`):** [**Download `FingerIN.dmg` (v1.0.0 · 2.8 MB)**](https://totallyraiva.github.io/FingerIN/downloads/FingerIN.dmg) *(or via [GitHub Raw](https://github.com/TotallyRaiva/FingerIN/raw/main/docs/downloads/FingerIN.dmg))*
-  - **SHA-256:** `9bb8d360256fb138ac1f6687b3d1933485249db125b21beddcd1019b93b40974`
+  - **SHA-256:** `616b119ed64cfea347f76072d2669f779c13afd9bfce6b7f224ed24a0436b2c2`
 
 ---
 
