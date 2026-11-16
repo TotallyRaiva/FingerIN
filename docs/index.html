@@ -1,0 +1,2022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FingerIN — Retro MPC Finger-Drumming Rhythm Game for macOS</title>
+  <meta name="description" content="An educational macOS finger-drumming rhythm game built with SwiftUI, SpriteKit, CoreMIDI, and AVAudioEngine. Features zero-latency real-time pad triggering, 18 swung 2-bar grooves across 6 styles, 5 studio drum kits, and built-in Rhodes & bass accompaniment." />
+  <meta property="og:title" content="FingerIN — Retro MPC Finger-Drumming Rhythm Game for macOS" />
+  <meta property="og:description" content="Master finger drumming on macOS with hardware MIDI pads or your keyboard. Zero-latency CoreMIDI audio, 18 grooves across 6 styles, 5 drum kits, and live Rhodes/Bass accompaniment." />
+  <meta property="og:image" content="./assets/app-icon.png" />
+  <link rel="icon" type="image/png" href="./assets/app-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bungee&family=JetBrains+Mono:wght@500;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --mpc-beige: #EADFCB;
+      --mpc-beige-dark: #D8C9AE;
+      --mpc-cream: #F6F1E5;
+      --mpc-chassis: #21242B;
+      --mpc-panel: #17191E;
+      --mpc-pad-idle: #2E323B;
+      --ink: #111216;
+      --lcd-bg: #0D261F;
+      --lcd-glow: #38F8B2;
+      --lcd-dim: #1D6B51;
+      --kick: #FF4D29;
+      --snare: #FFB800;
+      --chh: #00D67F;
+      --ohh: #00B4FF;
+      --purple: #9B6BFF;
+      --shadow-lg: 8px 8px 0px var(--ink);
+      --shadow-md: 5px 5px 0px var(--ink);
+      --shadow-sm: 3px 3px 0px var(--ink);
+      --border-ink: 3px solid var(--ink);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--mpc-cream);
+      background-image:
+        radial-gradient(rgba(17, 18, 22, 0.11) 1.25px, transparent 1.25px),
+        radial-gradient(rgba(255, 77, 41, 0.05) 1.25px, var(--mpc-cream) 1.25px);
+      background-size: 24px 24px;
+      background-position: 0 0, 12px 12px;
+      color: var(--ink);
+      line-height: 1.55;
+      overflow-x: hidden;
+    }
+
+    /* Top Marquee Ticker */
+    .top-ticker {
+      background: var(--ink);
+      color: var(--mpc-cream);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      padding: 8px 16px;
+      border-bottom: var(--border-ink);
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 20px;
+      text-transform: uppercase;
+    }
+    .top-ticker span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot-led {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--kick);
+      box-shadow: 0 0 8px var(--kick);
+      display: inline-block;
+    }
+
+    /* Navigation Bar */
+    .navbar {
+      max-width: 1220px;
+      margin: 20px auto 0;
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      text-decoration: none;
+      color: var(--ink);
+    }
+    .brand-icon {
+      width: 58px;
+      height: 58px;
+      border-radius: 14px;
+      border: var(--border-ink);
+      box-shadow: var(--shadow-sm);
+      background: var(--mpc-beige);
+      transition: transform 0.15s ease;
+    }
+    .brand:hover .brand-icon {
+      transform: rotate(-5deg) scale(1.05);
+    }
+    .brand-title {
+      font-family: 'Bungee', cursive;
+      font-size: 1.65rem;
+      line-height: 1;
+      letter-spacing: 0.02em;
+    }
+    .brand-sub {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 700;
+      background: var(--snare);
+      padding: 2px 7px;
+      border: 2px solid var(--ink);
+      border-radius: 6px;
+      display: inline-block;
+      margin-top: 3px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .nav-link {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-decoration: none;
+      color: var(--ink);
+      background: #fff;
+      padding: 8px 14px;
+      border: 2px solid var(--ink);
+      border-radius: 10px;
+      box-shadow: var(--shadow-sm);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .nav-link:hover {
+      transform: translate(-2px, -2px);
+      box-shadow: var(--shadow-md);
+      background: var(--snare);
+    }
+    .nav-link.primary {
+      background: var(--kick);
+      color: #fff;
+    }
+    .nav-link.primary:hover {
+      background: #ff360d;
+    }
+
+    /* Main Container */
+    .container {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 36px 24px 80px;
+    }
+
+    /* Hero Section */
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.08fr 0.92fr;
+      gap: 36px;
+      align-items: center;
+      margin-top: 12px;
+    }
+
+    .comic-badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .comic-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      padding: 5px 12px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      box-shadow: var(--shadow-sm);
+      background: var(--chh);
+      color: var(--ink);
+    }
+    .comic-badge.alt {
+      background: var(--snare);
+    }
+    .comic-badge.blue {
+      background: var(--ohh);
+    }
+
+    .hero-headline {
+      font-family: 'Bungee', cursive;
+      font-size: clamp(2.2rem, 4.4vw, 3.65rem);
+      line-height: 1.06;
+      color: var(--ink);
+      text-shadow: 3px 3px 0px var(--snare);
+      margin-bottom: 18px;
+    }
+    .hero-headline .highlight-kick {
+      color: var(--kick);
+      text-shadow: 3px 3px 0px var(--ink);
+    }
+
+    .hero-lead {
+      font-size: 1.12rem;
+      font-weight: 600;
+      color: #2B2E38;
+      margin-bottom: 26px;
+      max-width: 600px;
+    }
+
+    /* Download Card inside Hero */
+    .download-box {
+      background: var(--mpc-beige);
+      border: var(--border-ink);
+      border-radius: 20px;
+      padding: 22px 24px;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+      margin-bottom: 22px;
+    }
+    .download-box::before {
+      content: "MACOS RELEASE READY";
+      position: absolute;
+      top: -13px;
+      right: 18px;
+      background: var(--snare);
+      color: var(--ink);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 800;
+      padding: 3px 10px;
+      border: 2px solid var(--ink);
+      border-radius: 6px;
+      transform: rotate(2deg);
+    }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .btn-dmg {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--kick);
+      color: #fff;
+      font-family: 'Bungee', cursive;
+      font-size: 1.08rem;
+      text-decoration: none;
+      padding: 14px 24px;
+      border: var(--border-ink);
+      border-radius: 14px;
+      box-shadow: var(--shadow-md);
+      transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+      cursor: pointer;
+    }
+    .btn-dmg:hover {
+      transform: translate(-3px, -3px);
+      box-shadow: var(--shadow-lg);
+      background: #ff3810;
+    }
+    .btn-dmg:active {
+      transform: translate(2px, 2px);
+      box-shadow: 2px 2px 0px var(--ink);
+    }
+
+    .btn-repo {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #fff;
+      color: var(--ink);
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 800;
+      font-size: 0.9rem;
+      text-decoration: none;
+      padding: 14px 18px;
+      border: var(--border-ink);
+      border-radius: 14px;
+      box-shadow: var(--shadow-md);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .btn-repo:hover {
+      transform: translate(-2px, -2px);
+      box-shadow: var(--shadow-lg);
+      background: var(--snare);
+    }
+
+    .dmg-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 18px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      color: #323642;
+      border-top: 2px dashed rgba(17, 18, 22, 0.25);
+      padding-top: 12px;
+    }
+    .sha-pill {
+      background: rgba(255, 255, 255, 0.75);
+      border: 1.5px solid var(--ink);
+      border-radius: 6px;
+      padding: 2px 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 700;
+    }
+    .sha-pill:hover {
+      background: var(--snare);
+    }
+
+    /* Interactive MPC 2000XL Corner Hardware Unit */
+    .mpc-unit {
+      background: var(--mpc-beige);
+      border: 4px solid var(--ink);
+      border-radius: 28px;
+      padding: 22px;
+      box-shadow: 12px 12px 0px var(--ink);
+      position: relative;
+      user-select: none;
+    }
+    .mpc-top-strip {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      gap: 10px;
+    }
+    .mpc-model-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 800;
+      font-size: 0.85rem;
+      background: var(--mpc-cream);
+      border: 2.5px solid var(--ink);
+      padding: 4px 12px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .red-led {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #ff2a2a;
+      border: 2px solid var(--ink);
+      box-shadow: 0 0 8px #ff2a2a;
+    }
+    .mpc-model-right {
+      font-family: 'Bungee', cursive;
+      font-size: 0.82rem;
+      color: var(--ink);
+      background: var(--snare);
+      padding: 4px 10px;
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+    }
+
+    /* LCD Screen */
+    .mpc-lcd {
+      background: var(--lcd-bg);
+      border: 3px solid var(--ink);
+      border-radius: 14px;
+      padding: 14px 16px;
+      color: var(--lcd-glow);
+      font-family: 'JetBrains Mono', monospace;
+      margin-bottom: 16px;
+      box-shadow: inset 0 3px 10px rgba(0, 0, 0, 0.65);
+      position: relative;
+      overflow: hidden;
+    }
+    .mpc-lcd::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 2px,
+        rgba(0, 0, 0, 0.18) 3px
+      );
+      pointer-events: none;
+    }
+    .lcd-row-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.76rem;
+      font-weight: 700;
+      border-bottom: 1px solid var(--lcd-dim);
+      padding-bottom: 6px;
+      margin-bottom: 8px;
+    }
+    .lcd-main {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .lcd-groove-name {
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      color: #fff;
+      text-shadow: 0 0 8px var(--lcd-glow);
+    }
+    .lcd-judgment {
+      font-size: 0.82rem;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: rgba(56, 248, 178, 0.16);
+      color: var(--lcd-glow);
+    }
+    .lcd-step-bar {
+      display: grid;
+      grid-template-columns: repeat(16, 1fr);
+      gap: 4px;
+    }
+    .lcd-step {
+      height: 8px;
+      border-radius: 2px;
+      background: #143D31;
+      transition: background 0.06s ease;
+    }
+    .lcd-step.beat-marker {
+      background: #1E5746;
+    }
+    .lcd-step.active {
+      background: var(--lcd-glow);
+      box-shadow: 0 0 6px var(--lcd-glow);
+    }
+
+    /* Controls Strip on MPC */
+    .mpc-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .mpc-btn {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      font-weight: 800;
+      padding: 8px 12px;
+      border: 2.5px solid var(--ink);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+      box-shadow: var(--shadow-sm);
+      transition: transform 0.1s ease, background 0.1s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .mpc-btn:hover {
+      background: var(--snare);
+      transform: translate(-1px, -1px);
+    }
+    .mpc-btn.playing {
+      background: var(--chh);
+    }
+    .mpc-btn.music-on {
+      background: #C8B6FF;
+    }
+
+    /* Recessed Dark Pad Bed */
+    .mpc-pad-bed {
+      background: #3B424C;
+      border: 3.5px solid var(--ink);
+      border-radius: 20px;
+      padding: 18px;
+      position: relative;
+      box-shadow: inset 0 4px 0 rgba(0, 0, 0, 0.35);
+    }
+    .pad-grid-2x2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+      position: relative;
+    }
+    .mpc-pad {
+      aspect-ratio: 1 / 0.88;
+      background: var(--mpc-pad-idle);
+      border: 3.5px solid var(--ink);
+      border-radius: 16px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      cursor: pointer;
+      position: relative;
+      box-shadow: 0 6px 0 var(--ink), inset 0 2px 0 rgba(255, 255, 255, 0.12);
+      transition: transform 0.05s ease, box-shadow 0.05s ease, background 0.06s ease;
+      overflow: hidden;
+    }
+    .mpc-pad::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+      background-size: 8px 8px;
+      pointer-events: none;
+    }
+    .mpc-pad:active,
+    .mpc-pad.hit {
+      transform: translateY(5px);
+      box-shadow: 0 1px 0 var(--ink);
+    }
+    .mpc-pad[data-voice="kick"].hit {
+      background: var(--kick);
+      box-shadow: 0 0 24px var(--kick), 0 1px 0 var(--ink);
+    }
+    .mpc-pad[data-voice="snare"].hit {
+      background: var(--snare);
+      box-shadow: 0 0 24px var(--snare), 0 1px 0 var(--ink);
+    }
+    .mpc-pad[data-voice="chh"].hit {
+      background: var(--chh);
+      box-shadow: 0 0 24px var(--chh), 0 1px 0 var(--ink);
+    }
+    .mpc-pad[data-voice="ohh"].hit {
+      background: var(--ohh);
+      box-shadow: 0 0 24px var(--ohh), 0 1px 0 var(--ink);
+    }
+
+    .pad-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 1;
+    }
+    .pad-id {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 800;
+      color: rgba(255, 255, 255, 0.75);
+      background: rgba(0, 0, 0, 0.38);
+      padding: 2px 7px;
+      border-radius: 5px;
+    }
+    .pad-key {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+      font-weight: 800;
+      background: var(--mpc-cream);
+      color: var(--ink);
+      border: 2px solid var(--ink);
+      padding: 1px 7px;
+      border-radius: 6px;
+    }
+    .pad-bottom {
+      z-index: 1;
+      text-align: left;
+    }
+    .pad-voice-title {
+      font-family: 'Bungee', cursive;
+      font-size: 1.15rem;
+      color: #fff;
+      letter-spacing: 0.02em;
+      text-shadow: 2px 2px 0 var(--ink);
+    }
+    .pad-midi-sub {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      color: rgba(255, 255, 255, 0.8);
+      font-weight: 700;
+    }
+    .pad-color-bar {
+      height: 5px;
+      width: 100%;
+      border-radius: 999px;
+      margin-top: 6px;
+    }
+
+    /* Comic Onomatopoeia Pop Burst */
+    .comic-pop {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0) rotate(-10deg);
+      font-family: 'Bungee', cursive;
+      font-size: 1.35rem;
+      color: var(--ink);
+      background: #FFF200;
+      border: 3px solid var(--ink);
+      padding: 4px 10px;
+      border-radius: 10px;
+      box-shadow: 4px 4px 0 var(--ink);
+      pointer-events: none;
+      z-index: 10;
+      opacity: 0;
+      transition: transform 0.14s cubic-bezier(0.18, 1.4, 0.4, 1), opacity 0.14s ease;
+    }
+    .comic-pop.show {
+      transform: translate(-50%, -50%) scale(1) rotate(-8deg);
+      opacity: 1;
+    }
+
+    .mpc-hint-footer {
+      margin-top: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-align: center;
+      color: #2B2E38;
+    }
+
+    /* Section Headers */
+    .section {
+      margin-top: 84px;
+    }
+    .section-header {
+      margin-bottom: 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .section-kicker {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      background: var(--snare);
+      color: var(--ink);
+      border: 2px solid var(--ink);
+      padding: 3px 10px;
+      border-radius: 6px;
+      width: fit-content;
+      box-shadow: var(--shadow-sm);
+    }
+    .section-title {
+      font-family: 'Bungee', cursive;
+      font-size: clamp(1.75rem, 3.2vw, 2.5rem);
+      line-height: 1.12;
+      color: var(--ink);
+    }
+    .section-desc {
+      font-size: 1.04rem;
+      color: #2F333F;
+      max-width: 740px;
+      font-weight: 600;
+    }
+
+    /* Feature Bento Cards */
+    .bento-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+    }
+    .bento-card {
+      background: #fff;
+      border: var(--border-ink);
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: transform 0.14s ease, box-shadow 0.14s ease;
+    }
+    .bento-card:hover {
+      transform: translate(-3px, -3px);
+      box-shadow: var(--shadow-lg);
+    }
+    .bento-card.featured {
+      background: var(--mpc-beige);
+      grid-column: span 2;
+    }
+    .bento-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 800;
+      padding: 4px 10px;
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+      width: fit-content;
+      margin-bottom: 14px;
+    }
+    .bento-title {
+      font-family: 'Bungee', cursive;
+      font-size: 1.28rem;
+      margin-bottom: 10px;
+      line-height: 1.2;
+    }
+    .bento-body {
+      font-size: 0.95rem;
+      color: #2E323D;
+      font-weight: 600;
+    }
+    .bento-code {
+      margin-top: 16px;
+      background: var(--mpc-panel);
+      color: var(--lcd-glow);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 2px solid var(--ink);
+      overflow-x: auto;
+    }
+
+    /* Interactive 18-Groove Curriculum Explorer */
+    .explorer-shell {
+      background: var(--mpc-chassis);
+      color: #fff;
+      border: 4px solid var(--ink);
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: var(--shadow-lg);
+    }
+    .style-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .style-tab {
+      font-family: 'Bungee', cursive;
+      font-size: 0.86rem;
+      padding: 10px 16px;
+      border: 2.5px solid var(--ink);
+      border-radius: 12px;
+      background: #2E333D;
+      color: #D9DFEB;
+      cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .style-tab:hover {
+      background: #3D4452;
+    }
+    .style-tab.active {
+      background: var(--snare);
+      color: var(--ink);
+      box-shadow: 4px 4px 0 #000;
+      transform: translate(-2px, -2px);
+    }
+
+    .variation-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 22px;
+      padding-bottom: 18px;
+      border-bottom: 2px solid rgba(255, 255, 255, 0.12);
+    }
+    .var-tab {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 800;
+      padding: 7px 14px;
+      border-radius: 999px;
+      border: 2px solid rgba(255, 255, 255, 0.25);
+      background: transparent;
+      color: #fff;
+      cursor: pointer;
+    }
+    .var-tab.active {
+      background: var(--kick);
+      border-color: #fff;
+    }
+
+    .groove-details-bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+      background: #14161B;
+      padding: 16px 20px;
+      border-radius: 14px;
+      border: 2px solid rgba(255, 255, 255, 0.12);
+    }
+    .groove-title-block h3 {
+      font-family: 'Bungee', cursive;
+      font-size: 1.35rem;
+      color: var(--snare);
+    }
+    .groove-title-block p {
+      font-size: 0.9rem;
+      color: #B8C0D0;
+      margin-top: 4px;
+    }
+    .groove-badges {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+    .g-pill {
+      background: #252932;
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1.5px solid rgba(255, 255, 255, 0.18);
+    }
+
+    /* 16-Step Matrix Grid Visualizer */
+    .matrix-grid-wrap {
+      overflow-x: auto;
+    }
+    .matrix-row {
+      display: grid;
+      grid-template-columns: 120px repeat(16, minmax(26px, 1fr));
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .matrix-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .lane-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .matrix-cell {
+      height: 30px;
+      border-radius: 6px;
+      background: #14161B;
+      border: 1.5px solid rgba(255, 255, 255, 0.1);
+      position: relative;
+    }
+    .matrix-cell.downbeat {
+      border-color: rgba(255, 255, 255, 0.28);
+    }
+    .matrix-cell.on-kick {
+      background: var(--kick);
+      box-shadow: 0 0 10px rgba(255, 77, 41, 0.6);
+    }
+    .matrix-cell.on-snare {
+      background: var(--snare);
+      box-shadow: 0 0 10px rgba(255, 184, 0, 0.6);
+    }
+    .matrix-cell.on-chh {
+      background: var(--chh);
+      box-shadow: 0 0 10px rgba(0, 214, 127, 0.5);
+    }
+    .matrix-cell.on-ohh {
+      background: var(--ohh);
+      box-shadow: 0 0 10px rgba(0, 180, 255, 0.6);
+    }
+
+    /* Drum Kits Showcase */
+    .kits-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 16px;
+    }
+    .kit-card {
+      background: #fff;
+      border: var(--border-ink);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: var(--shadow-md);
+      cursor: pointer;
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+    .kit-card:hover,
+    .kit-card.active {
+      background: var(--snare);
+      transform: translate(-3px, -3px);
+      box-shadow: var(--shadow-lg);
+    }
+    .kit-name {
+      font-family: 'Bungee', cursive;
+      font-size: 1rem;
+      margin-bottom: 6px;
+    }
+    .kit-spec {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #363A45;
+      margin-bottom: 10px;
+    }
+    .kit-desc {
+      font-size: 0.84rem;
+      font-weight: 600;
+    }
+
+    /* Architecture Table / Module Map */
+    .arch-list {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px;
+    }
+    .arch-item {
+      background: #fff;
+      border: var(--border-ink);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: var(--shadow-md);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .arch-item-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .arch-file {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 800;
+      font-size: 0.95rem;
+      color: var(--ink);
+      text-decoration: none;
+      background: var(--mpc-beige);
+      padding: 4px 10px;
+      border: 2px solid var(--ink);
+      border-radius: 8px;
+    }
+    .arch-file:hover {
+      background: var(--snare);
+    }
+    .arch-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      font-weight: 800;
+      background: var(--ink);
+      color: #fff;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+
+    /* Install / Quick Start Steps */
+    .install-steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    .step-card {
+      background: var(--mpc-beige);
+      border: var(--border-ink);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow: var(--shadow-md);
+      position: relative;
+    }
+    .step-num {
+      font-family: 'Bungee', cursive;
+      font-size: 1.8rem;
+      color: var(--kick);
+      text-shadow: 2px 2px 0 var(--ink);
+      line-height: 1;
+      margin-bottom: 10px;
+    }
+    .step-card h4 {
+      font-family: 'Bungee', cursive;
+      font-size: 1.08rem;
+      margin-bottom: 8px;
+    }
+    .step-card p {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #2B2E38;
+    }
+    .cmd-box {
+      margin-top: 10px;
+      background: var(--ink);
+      color: var(--lcd-glow);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.74rem;
+      padding: 8px 10px;
+      border-radius: 8px;
+      overflow-x: auto;
+    }
+
+    /* Footer */
+    footer {
+      border-top: var(--border-ink);
+      background: var(--mpc-beige);
+      padding: 36px 24px;
+      margin-top: 80px;
+    }
+    .footer-inner {
+      max-width: 1220px;
+      margin: 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+
+    @media (max-width: 980px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+      .bento-grid {
+        grid-template-columns: 1fr;
+      }
+      .bento-card.featured {
+        grid-column: span 1;
+      }
+      .kits-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .arch-list,
+      .install-steps {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Hardware Ticker -->
+  <div class="top-ticker">
+    <span><i class="dot-led"></i> FINGERIN MACOS RHYTHM LAB</span>
+    <span>⚡ ZERO-LATENCY COREMIDI RT AUDIO</span>
+    <span>🥁 6 MUSIC STYLES × 3 VARIATIONS (18 GROOVES)</span>
+    <span>🎹 BUILT-IN RHODES + BASS ACCOMPANIMENT</span>
+    <span>🕹️ USB MIDI PADS + MAC KEYBOARD</span>
+  </div>
+
+  <!-- Navbar -->
+  <header class="navbar">
+    <a href="#" class="brand">
+      <img src="./assets/app-icon.png" alt="FingerIN App Icon" class="brand-icon" />
+      <div>
+        <div class="brand-title">FingerIN</div>
+        <span class="brand-sub">PAD A01 · MACOS RHYTHM GAME</span>
+      </div>
+    </a>
+    <nav class="nav-links">
+      <a href="#curriculum" class="nav-link">18 Grooves</a>
+      <a href="#drum-kits" class="nav-link">5 Drum Kits</a>
+      <a href="#architecture" class="nav-link">Architecture</a>
+      <a href="#install" class="nav-link">Install Guide</a>
+      <a href="https://github.com/TotallyRaiva/FingerIN" target="_blank" rel="noopener" class="nav-link">GitHub Repo ↗</a>
+      <a href="./downloads/FingerIN.dmg" download="FingerIN.dmg" class="nav-link primary">⬇ Download .DMG</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <!-- Hero Section -->
+    <section class="hero-grid">
+      <div>
+        <div class="comic-badge-row">
+          <span class="comic-badge">SwiftUI + SpriteKit</span>
+          <span class="comic-badge alt">CoreMIDI + AVAudioEngine</span>
+          <span class="comic-badge blue">SwiftData Persistence</span>
+        </div>
+
+        <h1 class="hero-headline">
+          PUNCH THE PADS.<br />
+          <span class="highlight-kick">LOCK THE POCKET.</span><br />
+          MAKE REAL MUSIC.
+        </h1>
+
+        <p class="hero-lead">
+          <strong>FingerIN</strong> is a native macOS educational finger-drumming game designed for 4×4 MIDI pad controllers (Akai MPD, Maschine Mikro, Launchpad) and Mac keyboards. Train real 2-bar swung beats with zero-latency sample triggering, velocity-layered drum kits, and live Fender Rhodes &amp; bassline accompaniment.
+        </p>
+
+        <!-- Download Card -->
+        <div class="download-box">
+          <div class="cta-row">
+            <a href="./downloads/FingerIN.dmg" download="FingerIN.dmg" class="btn-dmg">
+              <span>⬇ DOWNLOAD FINGERIN.DMG</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:0.76rem;background:rgba(0,0,0,0.25);padding:3px 8px;border-radius:6px;">v1.0 · 2.8 MB</span>
+            </a>
+            <a href="https://github.com/TotallyRaiva/FingerIN" target="_blank" rel="noopener" class="btn-repo">
+              View Source on GitHub ↗
+            </a>
+          </div>
+          <div class="dmg-meta">
+            <span>🍎 <strong>macOS 15.0+</strong> (Apple Silicon)</span>
+            <span>🎛️ <strong>CoreMIDI</strong> Plug &amp; Play</span>
+            <span class="sha-pill" id="copy-sha" title="Click to copy SHA-256 checksum">
+              🔒 SHA-256: <code id="sha-text">9bb8d360...b40974</code> (Copy)
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive Playable Retro MPC Corner Unit -->
+      <div class="mpc-unit" aria-label="Interactive Retro MPC Pad Preview">
+        <div class="mpc-top-strip">
+          <div class="mpc-model-tag">
+            <span>PAD A01</span>
+            <span class="red-led" id="midi-led"></span>
+          </div>
+          <div class="mpc-model-right">TRY IT LIVE IN BROWSER!</div>
+        </div>
+
+        <!-- Backlit LCD Display -->
+        <div class="mpc-lcd">
+          <div class="lcd-row-top">
+            <span id="lcd-kit-label">KIT: STUDIO</span>
+            <span id="lcd-bpm-label">BPM: 90 · SWING 58%</span>
+            <span id="lcd-latency-label">TRIM: TIGHT 2ms</span>
+          </div>
+          <div class="lcd-main">
+            <div class="lcd-groove-name" id="lcd-groove-title">BOOM BAP · BEAT 1</div>
+            <div class="lcd-judgment" id="lcd-hit-status">READY — HIT A/S/D/F</div>
+          </div>
+          <div class="lcd-step-bar" id="lcd-steps">
+            <div class="lcd-step beat-marker"></div><div class="lcd-step"></div><div class="lcd-step"></div><div class="lcd-step"></div>
+            <div class="lcd-step beat-marker"></div><div class="lcd-step"></div><div class="lcd-step"></div><div class="lcd-step"></div>
+            <div class="lcd-step beat-marker"></div><div class="lcd-step"></div><div class="lcd-step"></div><div class="lcd-step"></div>
+            <div class="lcd-step beat-marker"></div><div class="lcd-step"></div><div class="lcd-step"></div><div class="lcd-step"></div>
+          </div>
+        </div>
+
+        <!-- Hardware Transport & Kit Controls -->
+        <div class="mpc-controls">
+          <button type="button" class="mpc-btn" id="btn-play-demo">▶ PLAY GROOVE</button>
+          <button type="button" class="mpc-btn music-on" id="btn-toggle-music">🎹 MUSIC: ON</button>
+          <button type="button" class="mpc-btn" id="btn-cycle-kit">🥁 KIT: STUDIO</button>
+          <button type="button" class="mpc-btn" id="btn-cycle-style">🎵 STYLE: BOOM BAP</button>
+        </div>
+
+        <!-- 2x2 MPC Rubber Pad Bed -->
+        <div class="mpc-pad-bed">
+          <div class="pad-grid-2x2">
+            <div class="mpc-pad" data-voice="kick" data-key="A">
+              <div class="pad-top">
+                <span class="pad-id">PAD A01 · N36</span>
+                <span class="pad-key">Key A / 1</span>
+              </div>
+              <div class="pad-bottom">
+                <div class="pad-voice-title">KICK</div>
+                <div class="pad-midi-sub">PUNCH SUB · LANE 1</div>
+                <div class="pad-color-bar" style="background: var(--kick);"></div>
+              </div>
+              <div class="comic-pop">BOOM!</div>
+            </div>
+
+            <div class="mpc-pad" data-voice="snare" data-key="S">
+              <div class="pad-top">
+                <span class="pad-id">PAD A02 · N38</span>
+                <span class="pad-key">Key S / 2</span>
+              </div>
+              <div class="pad-bottom">
+                <div class="pad-voice-title">SNARE</div>
+                <div class="pad-midi-sub">CRISP BACKBEAT · LANE 2</div>
+                <div class="pad-color-bar" style="background: var(--snare);"></div>
+              </div>
+              <div class="comic-pop">CRACK!</div>
+            </div>
+
+            <div class="mpc-pad" data-voice="chh" data-key="D">
+              <div class="pad-top">
+                <span class="pad-id">PAD A03 · N42</span>
+                <span class="pad-key">Key D / 3</span>
+              </div>
+              <div class="pad-bottom">
+                <div class="pad-voice-title">CLOSED HAT</div>
+                <div class="pad-midi-sub">CHOKE GROUP · LANE 3</div>
+                <div class="pad-color-bar" style="background: var(--chh);"></div>
+              </div>
+              <div class="comic-pop">CHK!</div>
+            </div>
+
+            <div class="mpc-pad" data-voice="ohh" data-key="F">
+              <div class="pad-top">
+                <span class="pad-id">PAD A04 · N46</span>
+                <span class="pad-key">Key F / 4</span>
+              </div>
+              <div class="pad-bottom">
+                <div class="pad-voice-title">OPEN HAT</div>
+                <div class="pad-midi-sub">SHIMMER BARK · LANE 4</div>
+                <div class="pad-color-bar" style="background: var(--ohh);"></div>
+              </div>
+              <div class="comic-pop">TSSS!</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mpc-hint-footer">
+          👆 Click the pads or press <strong>A, S, D, F</strong> (or <strong>1, 2, 3, 4</strong>) on your keyboard to jam with the actual app samples!
+        </div>
+      </div>
+    </section>
+
+    <!-- Engineering Highlights Bento Grid -->
+    <section class="section">
+      <div class="section-header">
+        <span class="section-kicker">WHY IT FEELS LIKE HARDWARE</span>
+        <h2 class="section-title">REAL-TIME AUDIO &amp; RHYTHM ENGINEERING</h2>
+        <p class="section-desc">
+          Built from the ground up in Swift to eliminate the sluggishness of typical educational games—every pad strike fires directly on the CoreMIDI real-time thread before the UI even renders the next frame.
+        </p>
+      </div>
+
+      <div class="bento-grid">
+        <div class="bento-card featured">
+          <div>
+            <span class="bento-tag" style="background: var(--kick); color: #fff;">ZERO-LATENCY RT AUDIO PATH</span>
+            <h3 class="bento-title">Direct CoreMIDI Thread Sample Triggering</h3>
+            <p class="bento-body">
+              Standard macOS apps hop onto <code>@MainActor</code> before playing audio, adding 8–16ms of UI frame jitter. FingerIN caches the active MIDI-to-Voice lookup table behind an <code>OSAllocatedUnfairLock</code> and triggers pre-started <code>AVAudioPlayerNode</code> voices directly inside the high-priority CoreMIDI callback thread—paired with selectable sample transient trim modes (<code>RAW 0ms</code>, <code>TIGHT 2ms</code>, <code>ULTRA 5ms</code>).
+            </p>
+          </div>
+          <div class="bento-code">
+            MIDIManager.readProc (CoreMIDI RT Thread) ──► DataManager.voiceForNoteRealtime(_:) ──► AudioManager.triggerSoundRealtime(_:velocity:)
+          </div>
+        </div>
+
+        <div class="bento-card">
+          <div>
+            <span class="bento-tag" style="background: var(--snare);">120HZ DETERMINISTIC ENGINE</span>
+            <h3 class="bento-title">Phase-Locked SpriteKit Scheduler</h3>
+            <p class="bento-body">
+              Replaces drift-prone timer loops with a single frame-accurate <code>update(_:)</code> clock that drives falling note positions, scrolling bar/beat grid lines, phase-aligned metronome clicks, and signed millisecond feedback (<code>EARLY -11ms</code> / <code>LATE +8ms</code>).
+            </p>
+          </div>
+        </div>
+
+        <div class="bento-card">
+          <div>
+            <span class="bento-tag" style="background: var(--chh);">MUSICAL FEEL</span>
+            <h3 class="bento-title">Velocity Layers &amp; Hi-Hat Choke</h3>
+            <p class="bento-body">
+              Every drum voice is pre-rendered across 3 dynamic timbre tiers (<code>Ghost</code>, <code>Normal</code>, <code>Accent</code>) with pitch/saturation sculpting and an authentic MPC hi-hat choke group where Closed Hat immediately cuts Open Hat ring-out.
+            </p>
+          </div>
+        </div>
+
+        <div class="bento-card">
+          <div>
+            <span class="bento-tag" style="background: var(--ohh);">ACCOMPANIMENT SYNTH</span>
+            <h3 class="bento-title">Built-In Rhodes &amp; Bassline</h3>
+            <p class="bento-body">
+              Practicing bare drums in isolation feels sterile. FingerIN synthesizes style-matched electric piano chords and sub-bass grooves using a 4096-entry lookup table oscillator (<code>fastSinUnit</code>) pre-warmed at level load.
+            </p>
+          </div>
+        </div>
+
+        <div class="bento-card">
+          <div>
+            <span class="bento-tag" style="background: #C8B6FF;">HARDWARE CALIBRATION</span>
+            <h3 class="bento-title">MIDI Learn, Hot-Plug &amp; Offset</h3>
+            <p class="bento-body">
+              Auto-detects USB MIDI pad controllers on plug-in, parses multi-message chord packets &amp; running status, supports one-click per-lane <code>MAP</code> learning, and includes a dedicated 16-beat hardware latency calibration routine.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Interactive 18-Groove Curriculum Explorer -->
+    <section class="section" id="curriculum">
+      <div class="section-header">
+        <span class="section-kicker">6 STYLES × 3 BEAT VARIATIONS</span>
+        <h2 class="section-title">EXPLORE ALL 18 SWUNG 2-BAR GROOVES</h2>
+        <p class="section-desc">
+          Every music style includes three progressive 32-step (2-bar) variations—from foundational pocket to ghost-note syncopation and bar-2 turnaround fills. Click any style and beat variation below to inspect its step grid and test it on the MPC deck above!
+        </p>
+      </div>
+
+      <div class="explorer-shell">
+        <div class="style-tabs" id="style-tabs"></div>
+        <div class="variation-tabs" id="variation-tabs"></div>
+
+        <div class="groove-details-bar">
+          <div class="groove-title-block">
+            <h3 id="exp-title">Boom Bap — Beat 1: Classic 90s</h3>
+            <p id="exp-desc">J Dilla / Pete Rock inspired 2-bar pocket with ghost snares, swung 16th kicks, and a bar-2 turnaround fill.</p>
+          </div>
+          <div class="groove-badges">
+            <span class="g-pill" id="exp-bpm">90 BPM</span>
+            <span class="g-pill" id="exp-swing">58% MPC Swing</span>
+            <span class="g-pill" id="exp-bars">2 Bars · 32 Steps</span>
+          </div>
+        </div>
+
+        <div class="matrix-grid-wrap" id="matrix-container"></div>
+      </div>
+    </section>
+
+    <!-- 5 Studio Drum Kits Section -->
+    <section class="section" id="drum-kits">
+      <div class="section-header">
+        <span class="section-kicker">MULTI-VELOCITY SOUND ENGINE</span>
+        <h2 class="section-title">5 VOICED STUDIO DRUM KITS</h2>
+        <p class="section-desc">
+          Click any kit card to switch the live browser MPC engine above. In the macOS app, each kit reshapes pitch ratios, harmonic drive, transient punch, and studio room reverb send.
+        </p>
+      </div>
+
+      <div class="kits-grid" id="kits-grid">
+        <div class="kit-card active" data-kit="0">
+          <div class="kit-name">1. STUDIO</div>
+          <div class="kit-spec">PITCH 1.00× · REVERB 14%</div>
+          <p class="kit-desc">Balanced, punchy acoustic/electronic studio reference kit with crisp 85ms closed hats.</p>
+        </div>
+        <div class="kit-card" data-kit="1">
+          <div class="kit-name">2. MPC LO-FI</div>
+          <div class="kit-spec">PITCH 0.88× · WARM DRIVE</div>
+          <p class="kit-desc">Detuned 12-bit sampler crunch with dry 62ms choked hats and warm tape-saturated kicks.</p>
+        </div>
+        <div class="kit-card" data-kit="2">
+          <div class="kit-name">3. CLUB 909</div>
+          <div class="kit-spec">PITCH 1.08× · REVERB 18%</div>
+          <p class="kit-desc">Snappy high-tuned house &amp; techno kit with bright shimmering open hats on the "&amp;" counts.</p>
+        </div>
+        <div class="kit-card" data-kit="3">
+          <div class="kit-name">4. 808 TRAP</div>
+          <div class="kit-spec">SUB 0.82× · CRISP HATS</div>
+          <p class="kit-desc">Deep sub-heavy 808 kick with high-pitched snare crack and razor-tight 55ms trap hi-hats.</p>
+        </div>
+        <div class="kit-card" data-kit="4">
+          <div class="kit-name">5. FUNK BREAK</div>
+          <div class="kit-spec">SNARE 1.12× · ROOM 22%</div>
+          <p class="kit-desc">Live breakbeat tuning designed for ghost-note snare rolls, linear funk, and 168 BPM jungle.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Architecture & Codebase Map -->
+    <section class="section" id="architecture">
+      <div class="section-header">
+        <span class="section-kicker">PORTFOLIO &amp; CODEBASE OVERVIEW</span>
+        <h2 class="section-title">CLEAN MODULAR SWIFT ARCHITECTURE</h2>
+        <p class="section-desc">
+          Engineered with strict separation of concerns across real-time audio/MIDI, 120Hz SpriteKit rendering, SwiftUI reactive state, and SwiftData persistence. Click any module to view the source code on GitHub.
+        </p>
+      </div>
+
+      <div class="arch-list">
+        <div class="arch-item">
+          <div class="arch-item-head">
+            <a class="arch-file" href="https://github.com/TotallyRaiva/FingerIN/blob/main/FingerIN/AudioManager.swift" target="_blank" rel="noopener">AudioManager.swift ↗</a>
+            <span class="arch-badge">AVAudioEngine + RT DSP</span>
+          </div>
+          <p class="bento-body">
+            Manages 5 drum kits × 4 voices × 3 velocity tiers × 3 transient trim modes, 6-voice polyphonic node pools per drum lane, hi-hat choke groups, studio reverb, and lookup-table Rhodes/Bass accompaniment synthesis.
+          </p>
+        </div>
+
+        <div class="arch-item">
+          <div class="arch-item-head">
+            <a class="arch-file" href="https://github.com/TotallyRaiva/FingerIN/blob/main/FingerIN/MIDIManager.swift" target="_blank" rel="noopener">MIDIManager.swift ↗</a>
+            <span class="arch-badge">CoreMIDI + Hot-Plug</span>
+          </div>
+          <p class="bento-body">
+            Safe multi-message MIDI packet parser supporting chords, running status, Note-On velocity=0 handling, automatic USB device hot-plug discovery, and zero-hop real-time audio callback dispatch.
+          </p>
+        </div>
+
+        <div class="arch-item">
+          <div class="arch-item-head">
+            <a class="arch-file" href="https://github.com/TotallyRaiva/FingerIN/blob/main/FingerIN/GameScene.swift" target="_blank" rel="noopener">GameScene.swift ↗</a>
+            <span class="arch-badge">SpriteKit 120Hz Engine</span>
+          </div>
+          <p class="bento-body">
+            Deterministic elapsed-time note scheduler in <code>update(_:)</code>, scrolling bar/beat grid markers, phase-locked metronome &amp; backing track triggers, and keyboard fallback (<code>A,S,D,F</code> / <code>1,2,3,4</code>).
+          </p>
+        </div>
+
+        <div class="arch-item">
+          <div class="arch-item-head">
+            <a class="arch-file" href="https://github.com/TotallyRaiva/FingerIN/blob/main/FingerIN/PatternBuilder.swift" target="_blank" rel="noopener">PatternBuilder.swift ↗</a>
+            <span class="arch-badge">18 Grooves + Swing Math</span>
+          </div>
+          <p class="bento-body">
+            Defines <code>MusicStyle</code>, <code>DrumKit</code>, <code>SampleLatencyMode</code>, and <code>PatternBuilder</code> with authentic MPC 16th-note swing offsets and 3 progressive 32-step variations per genre.
+          </p>
+        </div>
+
+        <div class="arch-item">
+          <div class="arch-item-head">
+            <a class="arch-file" href="https://github.com/TotallyRaiva/FingerIN/blob/main/FingerIN/DataManager.swift" target="_blank" rel="noopener">DataManager.swift ↗</a>
+            <span class="arch-badge">SwiftData + UnfairLock</span>
+          </div>
+          <p class="bento-body">
+            Persists <code>PracticeSessionRecord</code> history and custom MIDI note mappings via SwiftData while maintaining an <code>OSAllocatedUnfairLock</code> snapshot for lock-free CoreMIDI thread lookups.
+          </p>
+        </div>
+
+        <div class="arch-item">
+          <div class="arch-item-head">
+            <a class="arch-file" href="https://github.com/TotallyRaiva/FingerIN/blob/main/FingerIN/ContentView.swift" target="_blank" rel="noopener">ContentView.swift ↗</a>
+            <span class="arch-badge">SwiftUI HUD + Inspector</span>
+          </div>
+          <p class="bento-body">
+            Hardware-inspired top transport bar, glowing <code>MUSIC</code> accompaniment toggle, style &amp; variation pill browser, sample latency selector, and <code>LeftContextPanel</code> MIDI Learn &amp; session analytics.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Download & Quick Install Section -->
+    <section class="section" id="install">
+      <div class="section-header">
+        <span class="section-kicker">GET STARTED IN 30 SECONDS</span>
+        <h2 class="section-title">INSTALLATION &amp; HARDWARE SETUP</h2>
+        <p class="section-desc">
+          Download the standalone macOS disk image or build directly from source in Xcode.
+        </p>
+      </div>
+
+      <div class="install-steps">
+        <div class="step-card">
+          <div class="step-num">01</div>
+          <h4>Download &amp; Mount .DMG</h4>
+          <p>
+            Grab <a href="./downloads/FingerIN.dmg" download="FingerIN.dmg" style="color:var(--kick);font-weight:800;">FingerIN.dmg (2.8 MB)</a>, double-click to mount the disk image, and drag <strong>FingerIN.app</strong> into your <strong>Applications</strong> folder.
+          </p>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num">02</div>
+          <h4>First Launch (Indie Build)</h4>
+          <p>
+            Because FingerIN is ad-hoc signed without an Apple notarization certificate, right-click <strong>FingerIN.app → Open</strong> on first launch, or clear quarantine in Terminal:
+          </p>
+          <div class="cmd-box">xattr -cr /Applications/FingerIN.app</div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-num">03</div>
+          <h4>Plug Pads or Use Keyboard</h4>
+          <p>
+            Connect any USB MIDI pad controller (click <strong>MAP</strong> in the left panel to assign custom pads) or play immediately with keys <strong>A, S, D, F</strong> / <strong>1, 2, 3, 4</strong> and <strong>Space</strong>.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <div>
+        <strong>FingerIN</strong> · Designed &amp; Engineered by <strong>Reiwa</strong> · Native macOS (SwiftUI · SpriteKit · CoreMIDI · AVAudioEngine)
+      </div>
+      <div style="display:flex;gap:16px;">
+        <a href="./downloads/FingerIN.dmg" download="FingerIN.dmg" style="color:var(--ink);">Download .DMG</a>
+        <a href="https://github.com/TotallyRaiva/FingerIN" target="_blank" rel="noopener" style="color:var(--ink);">GitHub Repository ↗</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Copy SHA-256 helper
+    const fullSha = "9bb8d360256fb138ac1f6687b3d1933485249db125b21beddcd1019b93b40974";
+    document.getElementById("copy-sha").addEventListener("click", () => {
+      navigator.clipboard.writeText(fullSha);
+      const el = document.getElementById("sha-text");
+      el.textContent = "COPIED TO CLIPBOARD!";
+      setTimeout(() => { el.textContent = "9bb8d360...b40974"; }, 1800);
+    });
+
+    // 18-Groove Curriculum Data (6 Styles x 3 Variations, Bar 1 16-step preview)
+    const STYLES = [
+      {
+        id: "boombap",
+        name: "Boom Bap",
+        bpm: 90,
+        swing: "58% Swing",
+        rootHz: 110.0, // A2
+        chordHz: [220.0, 261.63, 329.63, 392.0],
+        variations: [
+          {
+            title: "Beat 1: Classic 90s",
+            desc: "J Dilla / Pete Rock inspired pocket with swung 16th kicks and ghost snare pickup.",
+            kick:  [1,0,0,1, 0,0,0,0, 1,0,1,0, 0,0,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,0,0,0, 1,0,0,0],
+            chh:   [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,0,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 2: NY Crate Digger",
+            desc: "Syncopated off-beat kicks on the 'e' and 'a' counts with an open-hat lift into Beat 3.",
+            kick:  [1,1,0,0, 0,0,0,1, 0,0,1,0, 0,1,0,0],
+            snare: [0,0,0,0, 1,0,0,0, 0,1,0,0, 1,0,0,1],
+            chh:   [1,0,1,0, 1,0,0,0, 1,0,1,0, 1,0,1,0],
+            ohh:   [0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,0,0]
+          },
+          {
+            title: "Beat 3: Headnod Chop",
+            desc: "Heavy double-kick pickups, busy ghost notes, and chopped open-hat accents.",
+            kick:  [1,0,0,1, 0,1,0,0, 1,0,0,1, 0,0,1,0],
+            snare: [0,0,1,0, 1,0,0,1, 0,0,0,0, 1,0,0,1],
+            chh:   [1,0,1,0, 1,0,1,0, 1,0,0,0, 1,0,1,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,1,0, 0,0,0,0]
+          }
+        ]
+      },
+      {
+        id: "lofi",
+        name: "Lo-Fi Chill",
+        bpm: 76,
+        swing: "62% Swing",
+        rootHz: 130.81, // C3
+        chordHz: [261.63, 329.63, 392.0, 493.88],
+        variations: [
+          {
+            title: "Beat 1: Late Night Study",
+            desc: "Deep 62% MPC swing, warm Rhodes chords, and lazy ghost-note snare drags.",
+            kick:  [1,0,0,0, 0,0,0,1, 1,0,0,0, 0,0,0,0],
+            snare: [0,0,0,0, 1,0,0,0, 0,1,0,0, 1,0,0,1],
+            chh:   [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,0,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 2: Rainy Tape Loop",
+            desc: "Broken-beat kick placements with soft off-beat open-hat breaths.",
+            kick:  [1,0,0,1, 0,0,1,0, 0,0,1,0, 0,0,0,1],
+            snare: [0,0,0,0, 1,0,0,1, 0,0,0,0, 1,0,0,0],
+            chh:   [1,0,0,0, 1,0,1,0, 1,0,1,0, 1,0,1,0],
+            ohh:   [0,0,1,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]
+          },
+          {
+            title: "Beat 3: Vinyl Dust Waltz",
+            desc: "Dense 16th-note hat texture with expressive snare ghost triplets.",
+            kick:  [1,0,1,0, 0,0,0,1, 1,0,0,0, 0,1,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,1,0,0, 1,0,1,0],
+            chh:   [1,1,1,0, 1,0,1,0, 1,1,1,0, 1,0,0,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,0]
+          }
+        ]
+      },
+      {
+        id: "trap",
+        name: "Trap 808",
+        bpm: 140,
+        swing: "50% Straight",
+        rootHz: 87.31, // F2
+        chordHz: [174.61, 207.65, 261.63, 311.13],
+        variations: [
+          {
+            title: "Beat 1: Atlanta Bounce",
+            desc: "Half-time snare on Beat 3, syncopated 808 kicks, and rapid 16th hi-hat rolls.",
+            kick:  [1,0,0,0, 0,0,1,0, 0,0,0,1, 0,0,0,0],
+            snare: [0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0],
+            chh:   [1,0,1,1, 1,0,1,0, 1,0,1,1, 1,1,0,0],
+            ohh:   [0,0,0,0, 1,0,0,0, 0,0,0,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 2: Rolling Hi-Hats",
+            desc: "Stuttering 16th-note hat bursts paired with a double-snare bounce.",
+            kick:  [1,0,0,1, 0,0,0,0, 0,0,1,0, 0,0,1,0],
+            snare: [0,0,0,0, 0,0,0,0, 1,0,0,0, 0,1,0,0],
+            chh:   [1,1,1,1, 1,0,1,1, 1,0,1,1, 1,1,1,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1]
+          },
+          {
+            title: "Beat 3: Festival Sub Drop",
+            desc: "Aggressive 808 pattern with open-hat barks on the upbeats.",
+            kick:  [1,0,1,0, 0,1,0,0, 0,0,0,1, 1,0,0,0],
+            snare: [0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,1,0],
+            chh:   [1,0,1,0, 1,1,1,0, 1,0,1,0, 1,1,0,0],
+            ohh:   [0,0,0,0, 0,0,0,1, 0,0,0,0, 0,0,0,1]
+          }
+        ]
+      },
+      {
+        id: "house",
+        name: "House 4x4",
+        bpm: 124,
+        swing: "54% Groove",
+        rootHz: 98.0, // G2
+        chordHz: [196.0, 233.08, 293.66, 349.23],
+        variations: [
+          {
+            title: "Beat 1: Classic Club 909",
+            desc: "Four-on-the-floor kick, 909 open hats on every '&' upbeat, and ghost snare shuffle.",
+            kick:  [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,0,0,0, 1,0,0,0],
+            chh:   [1,1,0,1, 1,0,0,1, 1,1,0,1, 1,0,0,1],
+            ohh:   [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 2: Deep Garage Shuffle",
+            desc: "UK Garage / Deep House skipped-hat syncopation with swung ghost snares.",
+            kick:  [1,0,0,0, 1,0,0,0, 1,0,0,1, 1,0,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,1,0,0, 1,0,0,1],
+            chh:   [1,0,0,1, 1,1,0,0, 1,0,0,1, 1,1,0,0],
+            ohh:   [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 3: Peak-Time Jackin'",
+            desc: "Driving double-kick pickup and relentless off-beat 909 hat energy.",
+            kick:  [1,0,0,1, 1,0,0,0, 1,0,0,0, 1,0,1,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,0,0,1, 1,0,0,1],
+            chh:   [1,1,0,1, 1,1,0,1, 1,1,0,1, 1,1,0,0],
+            ohh:   [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,0,1,1]
+          }
+        ]
+      },
+      {
+        id: "funk",
+        name: "Funk Break",
+        bpm: 102,
+        swing: "56% Pocket",
+        rootHz: 110.0,
+        chordHz: [220.0, 277.18, 329.63, 392.0],
+        variations: [
+          {
+            title: "Beat 1: Clyde's Pocket",
+            desc: "Classic Funky Drummer syncopation with displaced Bar-1 Beat-4 snare and ghost notes.",
+            kick:  [1,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,1,0,1, 1,0,0,1],
+            chh:   [1,1,1,1, 1,1,1,0, 1,1,1,1, 1,1,0,1],
+            ohh:   [0,0,0,0, 0,0,0,1, 0,0,0,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 2: Oakland Linear",
+            desc: "Tower of Power style linear funk where kick, snare, and hat interlock tightly.",
+            kick:  [1,0,0,1, 0,0,1,0, 1,0,0,0, 0,1,0,1],
+            snare: [0,0,1,0, 1,0,0,1, 0,1,0,1, 1,0,0,0],
+            chh:   [1,1,0,1, 1,1,0,1, 1,0,1,1, 1,0,1,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 3: Breakbeat Cypher",
+            desc: "High-energy b-boy break with double kicks and rapid snare ghost rolls.",
+            kick:  [1,1,0,0, 0,0,1,1, 0,0,1,0, 0,0,1,0],
+            snare: [0,0,0,0, 1,0,0,0, 0,1,0,1, 1,0,0,1],
+            chh:   [1,0,1,1, 1,0,1,0, 1,0,1,0, 1,0,0,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,1]
+          }
+        ]
+      },
+      {
+        id: "dnb",
+        name: "D&B Jungle",
+        bpm: 168,
+        swing: "50% Break",
+        rootHz: 82.41, // E2
+        chordHz: [164.81, 196.0, 246.94, 293.66],
+        variations: [
+          {
+            title: "Beat 1: Classic Amen Step",
+            desc: "168 BPM two-step kick/snare backbone with displaced ghost snares.",
+            kick:  [1,0,1,0, 0,0,0,0, 0,0,1,0, 0,0,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,1,0,0, 1,0,0,1],
+            chh:   [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,0,0],
+            ohh:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,1,0]
+          },
+          {
+            title: "Beat 2: Liquid Roller",
+            desc: "Smooth rolling hi-hats and deep sub-bass kicks for atmospheric liquid D&B.",
+            kick:  [1,0,0,0, 0,0,0,0, 0,1,1,0, 0,0,0,0],
+            snare: [0,0,0,0, 1,0,0,1, 0,0,0,0, 1,0,0,1],
+            chh:   [1,1,1,0, 1,0,1,0, 1,1,1,0, 1,0,1,0],
+            ohh:   [0,0,0,1, 0,0,0,0, 0,0,0,1, 0,0,0,0]
+          },
+          {
+            title: "Beat 3: Jungle Choppage",
+            desc: "Chopped breakbeat snare syncopation with late-bar turnaround accents.",
+            kick:  [1,0,1,0, 0,0,0,1, 0,0,1,0, 0,0,0,0],
+            snare: [0,0,0,0, 1,0,1,0, 0,1,0,0, 1,0,1,1],
+            chh:   [1,0,1,0, 1,0,0,0, 1,0,1,0, 1,0,0,0],
+            ohh:   [0,0,0,0, 0,0,1,0, 0,0,0,0, 0,0,1,0]
+          }
+        ]
+      }
+    ];
+
+    const KITS = [
+      { name: "STUDIO", pitch: 1.0, hatDecay: 0.085, drive: 1.0 },
+      { name: "MPC LO-FI", pitch: 0.88, hatDecay: 0.062, drive: 1.35 },
+      { name: "CLUB 909", pitch: 1.08, hatDecay: 0.095, drive: 1.1 },
+      { name: "808 TRAP", pitch: 0.84, hatDecay: 0.055, drive: 1.4 },
+      { name: "FUNK BREAK", pitch: 1.1, hatDecay: 0.08, drive: 1.15 }
+    ];
+
+    let currentStyleIdx = 0;
+    let currentVarIdx = 0;
+    let currentKitIdx = 0;
+    let isPlaying = false;
+    let isMusicOn = true;
+    let stepTimer = null;
+    let currentStep = 0;
+
+    // Web Audio API Engine loading the real macOS app WAV samples
+    let audioCtx = null;
+    const sampleBuffers = {};
+    let activeOpenHatSource = null;
+
+    async function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === "suspended") {
+        await audioCtx.resume();
+      }
+      if (!sampleBuffers.kick) {
+        const files = {
+          kick: "./assets/samples/kick.wav",
+          snare: "./assets/samples/Snare.wav",
+          chh: "./assets/samples/hihat_closed.wav",
+          ohh: "./assets/samples/hihat_open.wav"
+        };
+        await Promise.all(
+          Object.entries(files).map(async ([key, url]) => {
+            try {
+              const res = await fetch(url);
+              const arr = await res.arrayBuffer();
+              sampleBuffers[key] = await audioCtx.decodeAudioData(arr);
+            } catch (e) {
+              console.warn("Fallback synth for", key, e);
+            }
+          })
+        );
+      }
+    }
+
+    function triggerVoice(voice, isUserHit = false) {
+      initAudio().then(() => {
+        const kit = KITS[currentKitIdx];
+        const now = audioCtx.currentTime;
+
+        // Hi-hat choke group: Closed Hat chokes Open Hat
+        if (voice === "chh" && activeOpenHatSource) {
+          try { activeOpenHatSource.stop(now + 0.01); } catch (_) {}
+          activeOpenHatSource = null;
+        }
+
+        if (sampleBuffers[voice]) {
+          const src = audioCtx.createBufferSource();
+          src.buffer = sampleBuffers[voice];
+          src.playbackRate.value = voice === "snare" ? kit.pitch * 1.03 : kit.pitch;
+
+          const gain = audioCtx.createGain();
+          gain.gain.setValueAtTime(0.95, now);
+
+          if (voice === "chh") {
+            gain.gain.exponentialRampToValueAtTime(0.001, now + kit.hatDecay);
+          } else if (voice === "ohh") {
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.32);
+            activeOpenHatSource = src;
+          }
+
+          src.connect(gain).connect(audioCtx.destination);
+          src.start(now, 0.002); // 2ms TIGHT transient trim
+        }
+
+        // Visual pad flash
+        const padEl = document.querySelector(`.mpc-pad[data-voice="${voice}"]`);
+        if (padEl) {
+          padEl.classList.add("hit");
+          const pop = padEl.querySelector(".comic-pop");
+          if (isUserHit && pop) {
+            pop.classList.add("show");
+            setTimeout(() => pop.classList.remove("show"), 180);
+          }
+          setTimeout(() => padEl.classList.remove("hit"), 110);
+        }
+
+        if (isUserHit) {
+          const offsets = ["-4ms PERFECT!", "+3ms PERFECT!", "-7ms PERFECT!", "+11ms GREAT!"];
+          document.getElementById("lcd-hit-status").textContent =
+            voice.toUpperCase() + " · " + offsets[Math.floor(Math.random() * offsets.length)];
+        }
+      });
+    }
+
+    function playBackingStep(step) {
+      if (!isMusicOn || !audioCtx) return;
+      const style = STYLES[currentStyleIdx];
+      const now = audioCtx.currentTime;
+
+      // Rhodes chord on step 0 and step 8
+      if (step === 0 || step === 8) {
+        style.chordHz.forEach((freq) => {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(step === 8 ? freq * 1.122 : freq, now);
+          gain.gain.setValueAtTime(0.045, now);
+          gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.65);
+          osc.connect(gain).connect(audioCtx.destination);
+          osc.start(now);
+          osc.stop(now + 0.66);
+        });
+      }
+
+      // Warm sub bassline on steps 0, 3, 8, 10
+      if (step === 0 || step === 3 || step === 8 || step === 10) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "sine";
+        const mult = step >= 8 ? 1.122 : 1.0;
+        osc.frequency.setValueAtTime(style.rootHz * mult, now);
+        gain.gain.setValueAtTime(0.16, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(now);
+        osc.stop(now + 0.25);
+      }
+    }
+
+    // Pad click/touch listeners
+    document.querySelectorAll(".mpc-pad").forEach((pad) => {
+      pad.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        triggerVoice(pad.dataset.voice, true);
+      });
+    });
+
+    // Keyboard A,S,D,F and 1,2,3,4 listeners
+    window.addEventListener("keydown", (e) => {
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key.toUpperCase();
+      if (k === "A" || k === "1") triggerVoice("kick", true);
+      if (k === "S" || k === "2") triggerVoice("snare", true);
+      if (k === "D" || k === "3") triggerVoice("chh", true);
+      if (k === "F" || k === "4") triggerVoice("ohh", true);
+    });
+
+    // Sequencer playback
+    function startSequencer() {
+      stopSequencer();
+      const style = STYLES[currentStyleIdx];
+      const stepMs = (60000 / style.bpm) / 4;
+      currentStep = 0;
+
+      stepTimer = setInterval(() => {
+        const v = style.variations[currentVarIdx];
+        if (v.kick[currentStep]) triggerVoice("kick", false);
+        if (v.snare[currentStep]) triggerVoice("snare", false);
+        if (v.chh[currentStep]) triggerVoice("chh", false);
+        if (v.ohh[currentStep]) triggerVoice("ohh", false);
+        playBackingStep(currentStep);
+
+        const stepEls = document.querySelectorAll("#lcd-steps .lcd-step");
+        stepEls.forEach((el, idx) => el.classList.toggle("active", idx === currentStep));
+
+        currentStep = (currentStep + 1) % 16;
+      }, stepMs);
+    }
+
+    function stopSequencer() {
+      if (stepTimer) {
+        clearInterval(stepTimer);
+        stepTimer = null;
+      }
+      document.querySelectorAll("#lcd-steps .lcd-step").forEach((el) => el.classList.remove("active"));
+    }
+
+    document.getElementById("btn-play-demo").addEventListener("click", async (e) => {
+      await initAudio();
+      isPlaying = !isPlaying;
+      const btn = e.currentTarget;
+      if (isPlaying) {
+        btn.textContent = "⏹ STOP GROOVE";
+        btn.classList.add("playing");
+        document.getElementById("lcd-hit-status").textContent = "PLAYING 2-BAR LOOP";
+        startSequencer();
+      } else {
+        btn.textContent = "▶ PLAY GROOVE";
+        btn.classList.remove("playing");
+        document.getElementById("lcd-hit-status").textContent = "READY — HIT A/S/D/F";
+        stopSequencer();
+      }
+    });
+
+    document.getElementById("btn-toggle-music").addEventListener("click", (e) => {
+      isMusicOn = !isMusicOn;
+      const btn = e.currentTarget;
+      btn.textContent = isMusicOn ? "🎹 MUSIC: ON" : "🎹 MUSIC: OFF";
+      btn.classList.toggle("music-on", isMusicOn);
+    });
+
+    function selectKit(idx) {
+      currentKitIdx = idx % KITS.length;
+      const kit = KITS[currentKitIdx];
+      document.getElementById("btn-cycle-kit").textContent = "🥁 KIT: " + kit.name;
+      document.getElementById("lcd-kit-label").textContent = "KIT: " + kit.name;
+      document.querySelectorAll(".kit-card").forEach((card, i) => {
+        card.classList.toggle("active", i === currentKitIdx);
+      });
+    }
+
+    document.getElementById("btn-cycle-kit").addEventListener("click", () => {
+      selectKit(currentKitIdx + 1);
+    });
+
+    document.querySelectorAll(".kit-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        selectKit(parseInt(card.dataset.kit, 10));
+        triggerVoice("kick", true);
+        setTimeout(() => triggerVoice("snare", false), 140);
+      });
+    });
+
+    document.getElementById("btn-cycle-style").addEventListener("click", () => {
+      currentStyleIdx = (currentStyleIdx + 1) % STYLES.length;
+      currentVarIdx = 0;
+      renderExplorer();
+      if (isPlaying) startSequencer();
+    });
+
+    // Render 18-Groove Curriculum Explorer
+    function renderExplorer() {
+      const style = STYLES[currentStyleIdx];
+      const variation = style.variations[currentVarIdx];
+
+      // Update LCD
+      document.getElementById("lcd-groove-title").textContent =
+        `${style.name.toUpperCase()} · BEAT ${currentVarIdx + 1}`;
+      document.getElementById("lcd-bpm-label").textContent =
+        `BPM: ${style.bpm} · ${style.swing.toUpperCase()}`;
+      document.getElementById("btn-cycle-style").textContent =
+        `🎵 STYLE: ${style.name.toUpperCase()}`;
+
+      // Style tabs
+      const styleTabsEl = document.getElementById("style-tabs");
+      styleTabsEl.innerHTML = "";
+      STYLES.forEach((s, idx) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "style-tab" + (idx === currentStyleIdx ? " active" : "");
+        b.textContent = `${s.name} (${s.bpm} BPM)`;
+        b.addEventListener("click", () => {
+          currentStyleIdx = idx;
+          currentVarIdx = 0;
+          renderExplorer();
+          if (isPlaying) startSequencer();
+        });
+        styleTabsEl.appendChild(b);
+      });
+
+      // Variation tabs
+      const varTabsEl = document.getElementById("variation-tabs");
+      varTabsEl.innerHTML = "";
+      style.variations.forEach((v, idx) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "var-tab" + (idx === currentVarIdx ? " active" : "");
+        b.textContent = v.title;
+        b.addEventListener("click", () => {
+          currentVarIdx = idx;
+          renderExplorer();
+          if (isPlaying) startSequencer();
+        });
+        varTabsEl.appendChild(b);
+      });
+
+      // Details bar
+      document.getElementById("exp-title").textContent = `${style.name} — ${variation.title}`;
+      document.getElementById("exp-desc").textContent = variation.desc;
+      document.getElementById("exp-bpm").textContent = `${style.bpm} BPM`;
+      document.getElementById("exp-swing").textContent = style.swing;
+
+      // Matrix rows
+      const lanes = [
+        { key: "kick", label: "KICK (36)", color: "var(--kick)", cls: "on-kick" },
+        { key: "snare", label: "SNARE (38)", color: "var(--snare)", cls: "on-snare" },
+        { key: "chh", label: "CL-HAT (42)", color: "var(--chh)", cls: "on-chh" },
+        { key: "ohh", label: "OP-HAT (46)", color: "var(--ohh)", cls: "on-ohh" }
+      ];
+
+      const container = document.getElementById("matrix-container");
+      container.innerHTML = "";
+
+      lanes.forEach((lane) => {
+        const row = document.createElement("div");
+        row.className = "matrix-row";
+
+        const label = document.createElement("div");
+        label.className = "matrix-label";
+        label.innerHTML = `<span class="lane-dot" style="background:${lane.color}"></span>${lane.label}`;
+        row.appendChild(label);
+
+        variation[lane.key].forEach((val, stepIdx) => {
+          const cell = document.createElement("div");
+          cell.className =
+            "matrix-cell" +
+            (stepIdx % 4 === 0 ? " downbeat" : "") +
+            (val ? " " + lane.cls : "");
+          cell.title = `${lane.label} · Step ${stepIdx + 1}`;
+          row.appendChild(cell);
+        });
+
+        container.appendChild(row);
+      });
+    }
+
+    renderExplorer();
+  </script>
+</body>
+</html>
